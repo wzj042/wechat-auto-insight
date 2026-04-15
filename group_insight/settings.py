@@ -96,14 +96,14 @@ DEFAULT_ANALYZE_END = ""
 DEFAULT_SEND_AFTER_RUN = True
 # 默认发送目标会话列表；可以包含“文件传输助手”、好友或群聊名称；@TODO 这会批量发送有点问题
 DEFAULT_SEND_TARGET_CHATS = [
-    "有氧运动聊天",
-    # "文件传输助手",
+    # "有氧运动聊天",
+    "文件传输助手",
     ]
 # 默认附带文本；留空时使用脚本自动生成的摘要。
 DEFAULT_SEND_MESSAGE = datetime.now().strftime("%m-%d") + "日报已发送"
 DEFAULT_OUTPUT_ROOT = SCRIPT_DIR / "reports" / "group_insight"
 STAGE_CACHE_VERSION = 3
-MAX_LINE_TEXT_LEN = 280
+MAX_LINE_TEXT_LEN = 1200
 APPMSG_XML_MAX_LEN = 120000
 RECORDITEM_XML_MAX_LEN = 240000
 DEFAULT_REPORT_IMAGE_WIDTH = 760
@@ -141,20 +141,27 @@ WORD_CLOUD_STOPWORDS = {
 def load_local_env() -> None:
     """从本地 `.env` 文件加载环境变量。
 
-    按当前工作目录、脚本目录和父目录的顺序查找，遇到第一个存在的文件后读取。
-    已存在于 `os.environ` 的键不会被覆盖。
+    优先读取仓库根目录，再兼容当前工作目录和父目录。已存在于 `os.environ`
+    的键不会被覆盖，便于任务计划或外部 shell 显式传入变量。
     """
 
-    candidates = [
-        Path.cwd() / ".env",
-        SCRIPT_DIR / ".env",
-        SCRIPT_DIR.parent / ".env",
-    ]
+    raw_candidates = [SCRIPT_DIR / ".env", Path.cwd() / ".env", SCRIPT_DIR.parent / ".env"]
+    candidates: list[Path] = []
+    seen_paths: set[Path] = set()
+    for candidate in raw_candidates:
+        resolved = candidate.resolve()
+        if resolved in seen_paths:
+            continue
+        seen_paths.add(resolved)
+        candidates.append(resolved)
+
     for env_path in candidates:
         if not env_path.exists():
             continue
         for raw_line in env_path.read_text(encoding="utf-8").splitlines():
-            line = raw_line.strip()
+            line = raw_line.lstrip("\ufeff").strip()
+            if line.startswith("export "):
+                line = line[len("export ") :].strip()
             if not line or line.startswith("#") or "=" not in line:
                 continue
             key, value = line.split("=", 1)
@@ -162,4 +169,6 @@ def load_local_env() -> None:
             value = value.strip().strip('"').strip("'")
             if key and key not in os.environ:
                 os.environ[key] = value
-        break
+
+
+load_local_env()

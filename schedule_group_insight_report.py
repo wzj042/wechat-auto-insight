@@ -17,6 +17,8 @@ ROOT_DIR = Path(__file__).resolve().parent
 DEFAULT_TASK_NAME = "GroupInsightReportDaily"
 DEFAULT_TIME = "23:50"
 DEFAULT_SCRIPT = ROOT_DIR / "group_insight_report.py"
+DEFAULT_VENV_PYTHON = ROOT_DIR / ".venv" / "Scripts" / "python.exe"
+DEFAULT_PYTHON = str(DEFAULT_VENV_PYTHON if DEFAULT_VENV_PYTHON.exists() else Path(sys.executable))
 
 TASK_TRIGGER_DAILY = 2
 TASK_ACTION_EXEC = 0
@@ -142,7 +144,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="注册 Windows 任务计划，每日定时运行根目录 group_insight_report.py")
     parser.add_argument("--time", default=DEFAULT_TIME, type=parse_time, help="每天运行时间，格式 HH:MM，默认 21:00")
     parser.add_argument("--task-name", default=DEFAULT_TASK_NAME, help="任务计划名称")
-    parser.add_argument("--python", default=sys.executable, help="用于执行脚本的 Python 可执行文件")
+    parser.add_argument("--python", default=DEFAULT_PYTHON, help="用于执行脚本的 Python 可执行文件，默认优先使用仓库 .venv")
     parser.add_argument("--script", default=str(DEFAULT_SCRIPT), help="要执行的脚本，默认根目录 group_insight_report.py")
     parser.add_argument("--args", default="", help="传给脚本的额外参数，例如 \"--chat xxx --send-after-run\"")
     parser.add_argument("--highest", action="store_true", help="用最高权限运行任务；需要管理员权限注册")
