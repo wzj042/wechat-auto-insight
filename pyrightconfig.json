@@ -1,0 +1,10 @@
+{
+  "venvPath": ".",
+  "venv": ".venv",
+  "extraPaths": [
+    "wechat-decrypt",
+    "pywechat"
+  ],
+  "reportMissingImports": "error",
+  "reportMissingModuleSource": "warning"
+}
