@@ -1,0 +1,36 @@
+# 查看任务是否存在
+Get-ScheduledTask -TaskName GroupInsightReportDaily -ErrorAction SilentlyContinue
+
+# 查看上次运行、下次运行、结果码
+Get-ScheduledTaskInfo -TaskName GroupInsightReportDaily
+
+# 查看详细信息
+schtasks /Query /TN GroupInsightReportDaily /V /FO LIST
+
+# 立刻手动运行一次
+Start-ScheduledTask -TaskName GroupInsightReportDaily
+
+# 禁用任务
+Disable-ScheduledTask -TaskName GroupInsightReportDaily
+
+# 重新启用任务
+Enable-ScheduledTask -TaskName GroupInsightReportDaily
+
+# 删除任务
+Unregister-ScheduledTask -TaskName GroupInsightReportDaily -Confirm:$false
+# 或者
+schtasks /Delete /TN GroupInsightReportDaily /F
+
+修改任务可以直接重新运行注册脚本，因为它内部用的是 create-or-update：
+
+# 改成每天 20:30
+python .\schedule_group_insight_report.py --time 20:30
+
+# 改任务名，相当于注册一个新任务；旧任务需要另外删除
+python .\schedule_group_insight_report.py --task-name GroupInsightReportDailyV2 --time 21:00
+
+# 修改传给 group_insight_report.py 的参数
+python .\schedule_group_insight_report.py --time 21:00 --args "--no-image --no-send-after-run"
+
+# 先预览不写入任务计划
+python .\schedule_group_insight_report.py --time 21:00 --args "--no-image" --dry-run
