@@ -44,9 +44,19 @@
 - `README`
   - Windows 任务计划的本地运维速查，包含查看、运行、禁用、启用、删除和重新注册任务的命令。
 - `group_insight_report.py`
-  - 根目录主业务脚本。
-  - 从 `wechat-decrypt` 的 MCP 查询能力读取已解密微信消息，生成群聊洞察 JSON/HTML/PNG。
-  - 支持 DeepSeek 和智谱模型，支持自动时间窗、分片/聚合、缓存、PNG 导出，以及通过 `pywechat/pyweixin` 自动发送报告图片。
+  - 兼容入口脚本。
+  - 保持 `python group_insight_report.py ...` 的原有调用方式，实际逻辑委托给 `group_insight.cli`。
+- `group_insight/`
+  - 群聊洞察报表的领域化模块包。
+  - `settings.py`：默认配置、路径、环境变量读取、正则和微信 MCP 懒加载入口。
+  - `models.py`：`StructuredMessage`、`MessageChunk` 等领域数据模型。
+  - `conversation.py`：消息清洗、富消息解析、发言人归一、消息分类、统计、分块、payload 压缩和微信数据源适配。
+  - `llm.py`：LLM 协议、DeepSeek/智谱客户端、schema 示例和 prompt 构造。
+  - `report_model.py`：报表结构修复、去重、fallback 报告生成和主题卡片/时间线归并。
+  - `pipeline.py`：map/reduce/final、direct-final、topic-first 等分析流水线。
+  - `rendering.py`：HTML 报表渲染、最终 payload 打包和缓存失效。
+  - `transport.py`：HTML 转 PNG、浏览器导出、微信图片发送、自动时间窗和发送目标解析。
+  - `cli.py`：命令行参数、运行时 LLM 配置和主流程装配。
 - `schedule_group_insight_report.py`
   - Windows 任务计划注册脚本。
   - 默认每天运行 `group_insight_report.py`，支持 `--time`、`--task-name`、`--python`、`--script`、`--args`、`--highest`、`--dry-run`。
@@ -69,6 +79,11 @@
 
 - 操作系统按 Windows 11 / PowerShell 使用。
 - 前端项目如后续出现，统一使用 `pnpm` 做包管理。
+- 根目录 Python 环境使用 `uv` 管理：
+  - `uv venv .venv --python 3.10`
+  - `uv pip install -r requirements.txt`
+- VSCode/Pyright 应使用根目录 `.venv`。`pyrightconfig.json` 已配置 `venvPath`、`venv` 和 `extraPaths`，用于解析 `wechat-decrypt/` 与 `pywechat/` 两个本地依赖模块。
+- 不要用 `type: ignore[reportMissingImports]` 掩盖缺依赖问题；缺依赖应通过 `requirements.txt` 或本地模块路径配置解决。
 - `wechat-decrypt` 依赖：
   - `pycryptodome`
   - `zstandard`
@@ -107,7 +122,8 @@
 
 - 除非任务明确要求，优先修改根目录本地脚本，不要随意大改 `pywechat/` 和 `wechat-decrypt/` 里的上游代码。
 - 子模块内如果有必要修改，先确认该改动是本地补丁、fork 补丁，还是要提交给上游；不要把子模块源码复制到父仓库绕开 Git 边界。
-- 根目录报表脚本同时触碰数据库读取、LLM 调用、HTML/PNG 渲染和 UI 自动发送，改动时优先用小范围 dry-run 或 `--no-image`、`--no-send-after-run` 验证。
+- 根目录报表能力已经按领域拆到 `group_insight/`。改动时优先落在对应领域模块，不要重新把逻辑堆回 `group_insight_report.py`。
+- 报表主流程同时触碰数据库读取、LLM 调用、HTML/PNG 渲染和 UI 自动发送，改动时优先用小范围 dry-run 或 `--no-image`、`--no-send-after-run` 验证。
 - `schedule_group_insight_report.py` 会写 Windows 任务计划；调试时优先使用 `--dry-run`。
 - 根目录某些统计或实验脚本可能并不都基于真实消息解密结果。改逻辑前先读脚本本身，不要假设它们全部是准确生产实现。
 

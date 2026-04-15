@@ -27,6 +27,7 @@ TASK_RUNLEVEL_HIGHEST = 1
 
 
 def load_task_scheduler():
+    """延迟导入 Windows 任务计划 COM 相关模块。"""
     try:
         import win32com.client
     except ImportError as exc:  # pragma: no cover - 环境缺失时直接给出可读错误
@@ -37,6 +38,7 @@ def load_task_scheduler():
 
 
 def parse_time(value: str) -> tuple[int, int]:
+    """解析 HH:MM 格式的任务触发时间。"""
     try:
         parsed = datetime.strptime(value, "%H:%M")
     except ValueError as exc:
@@ -45,6 +47,7 @@ def parse_time(value: str) -> tuple[int, int]:
 
 
 def resolve_executable(value: str) -> str:
+    """解析 Python 可执行文件路径，支持 PATH 中的命令名。"""
     candidate = Path(value)
     if candidate.exists():
         return str(candidate.resolve())
@@ -57,6 +60,7 @@ def resolve_executable(value: str) -> str:
 
 
 def resolve_script(value: str) -> Path:
+    """解析并校验要注册到任务计划中的脚本路径。"""
     candidate = Path(value)
     if not candidate.is_absolute():
         candidate = ROOT_DIR / candidate
@@ -67,6 +71,7 @@ def resolve_script(value: str) -> Path:
 
 
 def build_start_boundary(hour: int, minute: int) -> str:
+    """生成任务计划每日触发器需要的本地 ISO 时间。"""
     now = datetime.now()
     start = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
     if start <= now:
@@ -75,6 +80,7 @@ def build_start_boundary(hour: int, minute: int) -> str:
 
 
 def build_arguments(script_path: Path, extra_args: str) -> str:
+    """拼接任务计划中 python.exe 的命令行参数。"""
     args = [str(script_path)]
     if extra_args.strip():
         args.extend(shlex.split(extra_args, posix=False))
@@ -91,6 +97,7 @@ def register_task(
     run_highest: bool,
     wake_to_run: bool,
 ) -> None:
+    """创建或更新 Windows 每日任务计划。"""
     service = load_task_scheduler()
     service.Connect()
 
@@ -131,6 +138,7 @@ def register_task(
 
 
 def parse_args() -> argparse.Namespace:
+    """解析任务计划注册脚本的命令行参数。"""
     parser = argparse.ArgumentParser(description="注册 Windows 任务计划，每日定时运行根目录 group_insight_report.py")
     parser.add_argument("--time", default=DEFAULT_TIME, type=parse_time, help="每天运行时间，格式 HH:MM，默认 21:00")
     parser.add_argument("--task-name", default=DEFAULT_TASK_NAME, help="任务计划名称")
@@ -144,6 +152,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    """注册任务计划或在 dry-run 模式下打印将要执行的配置。"""
     args = parse_args()
     hour, minute = args.time
     python_path = resolve_executable(args.python)
