@@ -35,8 +35,8 @@ def dedupe_theme_cards(cards: list[dict[str, Any]], limit: int = 4) -> list[dict
     seen: set[tuple[str, str]] = set()
     deduped: list[dict[str, Any]] = []
     for card in cards:
-        title = normalize_text(card.get("title", ""), max_len=80)
-        summary = normalize_text(card.get("summary", ""))
+        title = normalize_text(card.get("title", ""), max_len=120)
+        summary = normalize_text(card.get("summary", ""), max_len=420)
         if not title and not summary:
             continue
         key = (title.lower(), summary.lower())
@@ -54,16 +54,16 @@ def dedupe_sections(sections: list[dict[str, Any]]) -> list[dict[str, Any]]:
     seen: set[tuple[str, str, str]] = set()
     deduped: list[dict[str, Any]] = []
     for section in sorted(sections, key=section_sort_key):
-        title = normalize_text(section.get("title", ""), max_len=100)
+        title = normalize_text(section.get("title", ""), max_len=140)
         start_time = (section.get("start_time", "") or "").strip()
         end_time = (section.get("end_time", "") or "").strip()
-        summary = normalize_text(section.get("summary", ""), max_len=240)
+        summary = normalize_text(section.get("summary", ""), max_len=700)
         bullets = [
-            normalize_text(item, max_len=120)
+            normalize_text(item, max_len=320)
             for item in section.get("bullets", [])
-            if normalize_text(item, max_len=120)
-        ][:2]
-        takeaway = normalize_text(section.get("takeaway", ""), max_len=160)
+            if normalize_text(item, max_len=320)
+        ][:4]
+        takeaway = normalize_text(section.get("takeaway", ""), max_len=320)
         if not title and not summary:
             continue
         key = (title.lower(), start_time, end_time)
@@ -242,9 +242,9 @@ def repair_final_report(
 ) -> dict[str, Any]:
     """规范化最终报表结构，并修复缺字段或覆盖不足的问题。"""
     repaired = {
-        "headline": normalize_text(report.get("headline", ""), max_len=80) or f"{chat_name} 群洞察报表",
-        "tagline": normalize_text(report.get("tagline", ""), max_len=120) or f"{start_time} - {end_time}",
-        "lead_summary": normalize_text(report.get("lead_summary", ""), max_len=800),
+        "headline": normalize_text(report.get("headline", ""), max_len=120) or f"{chat_name} 群洞察报表",
+        "tagline": normalize_text(report.get("tagline", ""), max_len=180) or f"{start_time} - {end_time}",
+        "lead_summary": normalize_text(report.get("lead_summary", ""), max_len=1600),
         "theme_cards": dedupe_theme_cards(report.get("theme_cards", []), limit=4),
         "sections": dedupe_sections(report.get("sections", [])),
         "participant_insights": report.get("participant_insights", [])[:6],

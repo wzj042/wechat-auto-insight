@@ -51,6 +51,16 @@ def render_html_report(
         for member_id, display_name in group_nicknames.items():
             add_member_mapping(member_id, display_name)
 
+        def resolve_member_id_prefix(prefix: str) -> str:
+            """用唯一前缀兜底修复被截断的成员占位符。"""
+            prefix = (prefix or '').strip().rstrip('.')
+            if not prefix:
+                return ''
+            if prefix in member_display_map:
+                return prefix
+            matches = [member_id for member_id in member_display_map if member_id.startswith(prefix)]
+            return matches[0] if len(matches) == 1 else ''
+
         def resolve_member_name(value: str) -> str:
             """把成员占位符或原始 ID 解析为展示名。"""
             value = (value or '').strip()
@@ -59,7 +69,12 @@ def render_html_report(
             match = re.fullmatch(r'\[\[user:([^\]]+)\]\]', value)
             if match:
                 member_id = match.group(1).strip()
-                return member_display_map.get(member_id, speaker_directory_map.get(member_id, member_id))
+                return member_display_map.get(member_id, speaker_directory_map.get(member_id, '未知成员'))
+            if value.startswith(('wxid_', 'gh_')) or value.endswith('@chatroom'):
+                member_id = resolve_member_id_prefix(value)
+                if member_id:
+                    return member_display_map.get(member_id, member_id)
+                return '未知成员'
             return member_display_map.get(value, value)
 
         def render_member_field(value: str) -> str:
@@ -75,11 +90,20 @@ def render_html_report(
 
             def replace_placeholder(match: re.Match[str]) -> str:
                 """把富文本中的成员占位符替换为 mention HTML。"""
-                sender_id = match.group(1).strip()
-                sender_name = resolve_member_name(f'[[user:{sender_id}]]')
+                sender_id = match.group(1).strip().rstrip('.')
+                member_id = resolve_member_id_prefix(sender_id) or sender_id
+                sender_name = resolve_member_name(f'[[user:{member_id}]]')
                 return f'<span class="mention">{html.escape(format_handle(sender_name))}</span>'
 
-            return re.sub(r'\[\[user:([^\]]+)\]\]', replace_placeholder, escaped)
+            def replace_raw_member_id(match: re.Match[str]) -> str:
+                """把模型偶发直出的 wxid/gh id 也替换为成员名。"""
+                sender_id = match.group(1).strip().rstrip('.')
+                member_id = resolve_member_id_prefix(sender_id) or sender_id
+                sender_name = resolve_member_name(f'[[user:{member_id}]]')
+                return f'<span class="mention">{html.escape(format_handle(sender_name))}</span>'
+
+            escaped = re.sub(r'\[\[user:([A-Za-z0-9_@.-]+)(?:\]\]|\.\.\.)?', replace_placeholder, escaped)
+            return re.sub(r'@?\b((?:wxid|gh)_[A-Za-z0-9_.-]{6,})\b', replace_raw_member_id, escaped)
 
         def render_participant_item(item: dict[str, Any]) -> str:
             """渲染一条成员观察列表项。"""
@@ -191,7 +215,7 @@ def render_html_report(
         def render_interaction_items(items: list[dict[str, Any]]) -> str:
             """渲染一个互动榜单分组。"""
             return ''.join(
-                f"<li>{item.get('rank', index)}. <span class='mention'>{html.escape(format_handle(item.get('name', '')))}</span>：{item.get('count', 0)} 次</li>"
+                f"<li>{item.get('rank', index)}. {render_member_field(item.get('name', ''))}：{item.get('count', 0)} 次</li>"
                 for index, item in enumerate(items[:5], start=1)
             ) or '<li>暂无</li>'
 

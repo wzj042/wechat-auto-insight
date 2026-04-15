@@ -26,7 +26,12 @@ def normalize_text(value: str, max_len: int | None = None) -> str:
     """折叠连续空白，并在需要时按最大长度截断文本。"""
     value = re.sub(r"\s+", " ", value or "").strip()
     if max_len and len(value) > max_len:
-        return value[: max_len - 3] + "..."
+        cut = max(0, max_len - 3)
+        open_pos = value.rfind("[[user:", 0, cut)
+        close_pos = value.find("]]", open_pos + 7) if open_pos >= 0 else -1
+        if open_pos >= 0 and (close_pos < 0 or close_pos + 2 > cut):
+            cut = open_pos
+        return value[:cut].rstrip() + "..."
     return value
 
 
@@ -493,7 +498,8 @@ def get_group_nickname_map(chat_id: str) -> dict[str, str]:
     if chat_id in _GROUP_NICKNAME_CACHE:
         return _GROUP_NICKNAME_CACHE[chat_id]
 
-    contact_db = SCRIPT_DIR / "decrypted" / "contact" / "contact.db"
+    decrypted_dir = Path(getattr(wechat_mcp, "DECRYPTED_DIR", WECHAT_DECRYPT_DIR / "decrypted"))
+    contact_db = decrypted_dir / "contact" / "contact.db"
     mapping: dict[str, str] = {}
     if not contact_db.exists():
         _GROUP_NICKNAME_CACHE[chat_id] = mapping
@@ -1073,7 +1079,8 @@ def fetch_structured_messages(
         finally:
             conn.close()
 
-    member_aliases = {**group_nicknames, **collect_member_aliases_from_messages(collected)}
+    # 群聊报表优先使用“本群昵称”，避免被联系人备注覆盖。
+    member_aliases = {**collect_member_aliases_from_messages(collected), **group_nicknames}
     for message in collected:
         alias = member_aliases.get(message.sender_username or "")
         if alias and not is_resolved_member_display(message.sender_username, message.sender):
