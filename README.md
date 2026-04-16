@@ -63,7 +63,7 @@ ZHIPUAI_MODEL=glm-4.5-flash
 
 - Windows PC 微信已登录并正在运行。
 - 需要读取进程内存提取密钥时，PowerShell 通常要用管理员权限启动。
-- `wechat-decrypt/config.json` 已存在；如果没有，从 `wechat-decrypt/config.example.json` 复制并填写。
+- `wechat-decrypt/config.json` 已存在；如果没有，执行时会自动填充
 - `wechat-decrypt/all_keys.json` 和 `wechat-decrypt/decrypted/` 对应当前登录账号。
 
 常用命令：
