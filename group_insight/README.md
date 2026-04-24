@@ -42,8 +42,10 @@ DEEPSEEK_API_URL=https://api.deepseek.com/chat/completions
 当前推荐用法强调显式配置和 fail-fast：
 
 - 群聊、时间窗、API Key、发送目标等关键输入缺失时，优先直接修正参数或仓库根目录 `.env`。
-- `direct_range` 自动回退和 LLM 返回 JSON 自动修复按显式开关理解，默认关闭；需要时分别显式传 `--allow-direct-retry`、`--allow-json-repair`。
+- 主流程固定走 `map -> reduce -> final`，不再暴露 `direct_range` / `topic-first` 这类分支模式。
+- LLM 返回 JSON 自动修复按显式开关理解，默认关闭；需要时显式传 `--allow-json-repair`。
 - DeepSeek 默认显式传 `max_tokens` 预算，避免 JSON 输出链路在思考模式或异常情况下失控扩张；如需改预算，优先从命令行参数或代码常量调整。
+- LLM 花费改为按任务前后余额快照对比，不再在每次请求后动态打印 usage 计费估算。
 - 文档只保留当前推荐参数，不再展开旧兼容入口。
 
 ## 微信数据库准备
@@ -245,7 +247,7 @@ python -m pip install -U typing-extensions
 - `group_insight/cli.py`：命令行参数和主流程。
 - `group_insight/settings.py`：默认值、路径、`.env` 加载和 MCP 懒加载。
 - `group_insight/conversation.py`：消息清洗、分类、统计和分片。
-- `group_insight/pipeline.py`：map/reduce/final、direct-final、topic-first 分析流水线。
+- `group_insight/pipeline.py`：固定 `map/reduce/final` 分析流水线。
 - `group_insight/rendering.py`：HTML 渲染和最终 payload。
 - `group_insight/transport.py`：PNG 导出和 RPA 发送。
 - `group_insight/scheduler.py`：Windows 任务计划注册模块。

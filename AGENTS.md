@@ -53,7 +53,7 @@
   - `conversation.py`：消息清洗、富消息解析、发言人归一、消息分类、统计、分块、payload 压缩和微信数据源适配。
   - `llm.py`：LLM 协议、DeepSeek 客户端、schema 示例和 prompt 构造。
   - `report_model.py`：报表结构修复、去重、fallback 报告生成和主题卡片/时间线归并。
-  - `pipeline.py`：map/reduce/final、direct-final、topic-first 等分析流水线。
+  - `pipeline.py`：固定 `map/reduce/final` 分析流水线。
   - `rendering.py`：HTML 报表渲染、最终 payload 打包和缓存失效。
   - `transport.py`：HTML 转 PNG、浏览器导出、微信图片发送、自动时间窗和发送目标解析。
   - `cli.py`：命令行参数、运行时 DeepSeek 配置和主流程装配。
@@ -120,7 +120,7 @@
 - 群聊日报能力已经按领域拆到 `group_insight/`。改动时优先落在对应领域模块，不要重新在根目录恢复兼容包装脚本。
 - 文档和说明优先强调 fail-fast：缺少关键参数、环境变量、数据库准备或交互式桌面条件时，直接报错并修正输入，不要再补充新的静默兼容分支。
 - 报表主流程同时触碰数据库读取、LLM 调用、HTML/PNG 渲染和 UI 自动发送，改动时优先用小范围 dry-run 或 `--no-image`、`--no-send-after-run` 验证。
-- `direct_range` 自动回退、LLM JSON 自动修复这类容错能力，如需长期保留，应改成显式开关且默认关闭；文档按该收口方向描述，不把自动兜底写成常规行为。
+- LLM JSON 自动修复这类容错能力，如需长期保留，应改成显式开关且默认关闭；文档按该收口方向描述，不把自动兜底写成常规行为。
 - `group_insight.scheduler` 会写 Windows 任务计划；调试时优先使用 `python -m group_insight.scheduler --dry-run`。
 - 根目录某些统计或实验脚本可能并不都基于真实消息解密结果。改逻辑前先读脚本本身，不要假设它们全部是准确生产实现。
 
