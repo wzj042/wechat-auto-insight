@@ -8,7 +8,6 @@ import shlex
 import shutil
 import subprocess
 import sys
-from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -25,22 +24,6 @@ TASK_CREATE_OR_UPDATE = 6
 TASK_LOGON_INTERACTIVE_TOKEN = 3
 TASK_RUNLEVEL_LUA = 0
 TASK_RUNLEVEL_HIGHEST = 1
-
-
-@dataclass(frozen=True)
-class TaskTarget:
-    """任务计划中要执行的 Python 入口。"""
-
-    kind: str
-    value: str | Path
-
-    def display(self) -> str:
-        """返回便于打印的入口描述。"""
-
-        if self.kind == "module":
-            return f"module {self.value}"
-        return str(self.value)
-
 
 def load_task_scheduler():
     """延迟导入 Windows 任务计划 COM 相关模块。"""
@@ -77,31 +60,13 @@ def resolve_executable(value: str) -> str:
         return resolved
 
     raise FileNotFoundError(f"找不到 Python 可执行文件: {value}")
-
-
-def resolve_script(value: str) -> Path:
-    """解析并校验任务计划要执行的脚本路径。"""
-
-    candidate = Path(value)
-    if not candidate.is_absolute():
-        candidate = ROOT_DIR / candidate
-    candidate = candidate.resolve()
-    if not candidate.is_file():
-        raise FileNotFoundError(f"找不到脚本文件: {candidate}")
-    return candidate
-
-
-def resolve_task_target(module_name: str, script_path: str) -> TaskTarget:
-    """解析最终要注册的任务入口。"""
-
-    legacy_script = script_path.strip()
-    if legacy_script:
-        return TaskTarget(kind="script", value=resolve_script(legacy_script))
+def resolve_task_target(module_name: str) -> str:
+    """解析最终要注册的任务入口模块。"""
 
     module = module_name.strip()
     if not module:
-        raise SystemExit("未提供任务入口。请传 --module 或 --script。")
-    return TaskTarget(kind="module", value=module)
+        raise SystemExit("未提供任务入口模块。请传 --module。")
+    return module
 
 
 def build_start_boundary(hour: int, minute: int) -> str:
@@ -114,13 +79,10 @@ def build_start_boundary(hour: int, minute: int) -> str:
     return start.isoformat(timespec="seconds")
 
 
-def build_arguments(target: TaskTarget, extra_args: str) -> str:
+def build_arguments(module_name: str, extra_args: str) -> str:
     """拼接任务计划中 python.exe 的命令行参数。"""
 
-    if target.kind == "module":
-        args = ["-m", str(target.value)]
-    else:
-        args = [str(target.value)]
+    args = ["-m", module_name]
     if extra_args.strip():
         args.extend(shlex.split(extra_args, posix=False))
     return subprocess.list2cmdline(args)
@@ -129,7 +91,7 @@ def build_arguments(target: TaskTarget, extra_args: str) -> str:
 def register_task(
     task_name: str,
     python_path: str,
-    task_target: TaskTarget,
+    module_name: str,
     task_args: str,
     start_boundary: str,
     *,
@@ -142,7 +104,7 @@ def register_task(
     service.Connect()
 
     task = service.NewTask(0)
-    task.RegistrationInfo.Description = f"Daily run of {task_target.display()}"
+    task.RegistrationInfo.Description = f"Daily run of module {module_name}"
     settings = task.Settings
     settings.Enabled = True
     settings.StartWhenAvailable = True
@@ -163,7 +125,7 @@ def register_task(
 
     action = task.Actions.Create(TASK_ACTION_EXEC)
     action.Path = python_path
-    action.Arguments = build_arguments(task_target, task_args)
+    action.Arguments = build_arguments(module_name, task_args)
     action.WorkingDirectory = str(ROOT_DIR)
 
     root_folder = service.GetFolder("\\")
@@ -181,11 +143,10 @@ def parse_args() -> argparse.Namespace:
     """解析任务计划注册脚本的命令行参数。"""
 
     parser = argparse.ArgumentParser(description="注册 Windows 任务计划，每日定时运行 group_insight 报表。")
-    parser.add_argument("--time", default=DEFAULT_TIME, type=parse_time, help="每天运行时间，格式 HH:MM，默认 23:50")
+    parser.add_argument("--time", default=DEFAULT_TIME, type=parse_time, help=f"每天运行时间，格式 HH:MM，默认 {DEFAULT_TIME}")
     parser.add_argument("--task-name", default=DEFAULT_TASK_NAME, help="任务计划名称")
     parser.add_argument("--python", default=DEFAULT_PYTHON, help="用于执行脚本的 Python 可执行文件，默认优先使用仓库 .venv")
     parser.add_argument("--module", default=DEFAULT_MODULE, help="要执行的 Python 模块，默认 group_insight")
-    parser.add_argument("--script", default="", help="兼容旧参数；传入时改为执行脚本路径，而不是 --module")
     parser.add_argument("--args", default="", help="传给报表入口的额外参数，例如 \"--chat xxx --send-after-run\"")
     parser.add_argument("--highest", action="store_true", help="用最高权限运行任务；需要管理员权限注册")
     parser.add_argument("--no-wake", action="store_true", help="不要允许任务唤醒计算机")
@@ -199,14 +160,14 @@ def main() -> None:
     args = parse_args()
     hour, minute = args.time
     python_path = resolve_executable(args.python)
-    task_target = resolve_task_target(args.module, args.script)
+    task_target = resolve_task_target(args.module)
     start_boundary = build_start_boundary(hour, minute)
     command_line = build_arguments(task_target, args.args)
 
     print(f"任务名称: {args.task_name}")
     print(f"启动时间: 每日 {hour:02d}:{minute:02d}")
     print(f"Python: {python_path}")
-    print(f"入口: {task_target.display()}")
+    print(f"入口: module {task_target}")
     print(f"工作目录: {ROOT_DIR}")
     print(f"命令行: {python_path} {command_line}")
     print(f"首次触发: {start_boundary}")

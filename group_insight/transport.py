@@ -148,7 +148,7 @@ def export_report_image(
 def send_report_png_to_chat(
     image_path: Path,
     message_lines: list[str] | None = None,
-    friend_name: str = DEFAULT_FILEHELPER_NAME,
+    friend_name: str = "文件传输助手",
 ) -> None:
     """通过 `pyweixin` 将 PNG 发送到指定会话。"""
 

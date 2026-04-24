@@ -7,44 +7,66 @@ from .rendering import *
 from .transport import *
 
 
-def resolve_llm_runtime_config(args: argparse.Namespace) -> tuple[str, str, str]:
-    """根据参数与环境变量解析运行时 LLM 配置。"""
+def parse_optional_env_bool(value: str | None, *, default: bool, env_name: str) -> bool:
+    """解析环境变量中的布尔开关。"""
+    normalized = (value or "").strip().lower()
+    if not normalized:
+        return default
+    if normalized in {"1", "true", "yes", "on", "enabled"}:
+        return True
+    if normalized in {"0", "false", "no", "off", "disabled"}:
+        return False
+    raise SystemExit(f"{env_name} 只能是 true/false、1/0、on/off、enabled/disabled。")
 
-    provider = (args.provider or DEFAULT_PROVIDER).strip().lower()
-    if provider == "zhipu":
-        api_key = (args.api_key or os.environ.get("ZHIPUAI_API_KEY", "")).strip()
-        model = (args.model or os.environ.get("ZHIPUAI_MODEL", "") or DEFAULT_ZHIPU_MODEL).strip()
-    else:
-        api_key = (args.api_key or os.environ.get("DEEPSEEK_API_KEY", "")).strip()
-        model = (args.model or os.environ.get("DEEPSEEK_MODEL", "") or DEFAULT_DEEPSEEK_MODEL).strip()
-    return provider, api_key, model
+
+def normalize_reasoning_effort(value: str | None) -> str:
+    """校验 DeepSeek reasoning_effort 配置。"""
+    normalized = (value or "").strip().lower()
+    if not normalized:
+        return DEFAULT_DEEPSEEK_REASONING_EFFORT
+    if normalized not in {"high", "max"}:
+        raise SystemExit("THINKING_LEVEL / --reasoning-effort 只能是 high 或 max。")
+    return normalized
+
+
+def resolve_llm_runtime_config(args: argparse.Namespace) -> tuple[str, str, bool, str]:
+    """根据参数与环境变量解析运行时 DeepSeek 配置。"""
+
+    api_key = (args.api_key or os.environ.get("DEEPSEEK_API_KEY", "")).strip()
+    model = (args.model or os.environ.get("DEEPSEEK_MODEL", "") or DEFAULT_DEEPSEEK_MODEL).strip()
+    thinking_enabled = (
+        bool(args.thinking)
+        if args.thinking is not None
+        else parse_optional_env_bool(
+            os.environ.get("THINKING"),
+            default=DEFAULT_DEEPSEEK_THINKING,
+            env_name="THINKING",
+        )
+    )
+    reasoning_effort = normalize_reasoning_effort(
+        args.reasoning_effort if args.reasoning_effort is not None else os.environ.get("THINKING_LEVEL")
+    )
+    return api_key, model, thinking_enabled, reasoning_effort
 
 
 def create_llm_client(
-    provider: str,
     api_key: str,
     model: str,
     api_url: str,
-    *,
-    zhipu_rate_limit_retries: int,
-    zhipu_min_interval_seconds: float,
-    zhipu_rate_limit_base_delay: float,
-    zhipu_rate_limit_max_delay: float,
+    allow_json_repair: bool,
+    thinking_enabled: bool,
+    reasoning_effort: str,
 ) -> LLMClientProtocol:
-    """按 provider 创建对应的 LLM 客户端。"""
+    """创建 DeepSeek LLM 客户端。"""
 
-    if provider == "zhipu":
-        return ZhipuClient(
-            api_key=api_key,
-            model=model,
-            max_retries=max(1, zhipu_rate_limit_retries),
-            min_interval_seconds=max(0.0, zhipu_min_interval_seconds),
-            rate_limit_base_delay=max(0.5, zhipu_rate_limit_base_delay),
-            rate_limit_max_delay=max(1.0, zhipu_rate_limit_max_delay),
-        )
-    if provider == "deepseek":
-        return DeepSeekClient(api_key=api_key, model=model, api_url=api_url)
-    raise ValueError(f"不支持的 provider: {provider}")
+    return DeepSeekClient(
+        api_key=api_key,
+        model=model,
+        api_url=api_url,
+        allow_json_repair=allow_json_repair,
+        thinking_enabled=thinking_enabled,
+        reasoning_effort=reasoning_effort,
+    )
 
 
 def parse_args() -> argparse.Namespace:
@@ -52,13 +74,14 @@ def parse_args() -> argparse.Namespace:
 
     parser = argparse.ArgumentParser(description="Generate a structured WeChat group insight report.")
     parser.add_argument("--chat", default=DEFAULT_ANALYZE_CHAT, help="群聊名称、wxid 或 @chatroom ID。未传时读取脚本顶部 DEFAULT_ANALYZE_CHAT。")
-    parser.add_argument("--auto-time", action=argparse.BooleanOptionalAction, default=DEFAULT_AUTO_TIME, help="自动使用昨日 03:59 到今日 03:59 的分析时间窗；具体日切点读取 DEFAULT_AUTO_TIME_CUTOFF。")
+    parser.add_argument("--auto-time", action=argparse.BooleanOptionalAction, default=DEFAULT_AUTO_TIME, help=f"自动使用昨日 {DEFAULT_AUTO_TIME_CUTOFF} 到今日 {DEFAULT_AUTO_TIME_CUTOFF} 的分析时间窗；具体日切点读取 DEFAULT_AUTO_TIME_CUTOFF。")
     parser.add_argument("--start", default=DEFAULT_ANALYZE_START, help="开始时间，支持 YYYY-MM-DD / YYYY-MM-DD HH:MM[:SS]。DEFAULT_AUTO_TIME=False 时读取脚本顶部 DEFAULT_ANALYZE_START。")
     parser.add_argument("--end", default=DEFAULT_ANALYZE_END, help="结束时间，支持 YYYY-MM-DD / YYYY-MM-DD HH:MM[:SS]。DEFAULT_AUTO_TIME=False 时读取脚本顶部 DEFAULT_ANALYZE_END。")
-    parser.add_argument("--provider", default=os.environ.get("GROUP_INSIGHT_PROVIDER", DEFAULT_PROVIDER), choices=["zhipu", "deepseek"], help="LLM 提供方，默认 zhipu。")
-    parser.add_argument("--api-key", default=os.environ.get("GROUP_INSIGHT_API_KEY", ""), help="LLM API Key；若不传则按 provider 读取 ZHIPUAI_API_KEY 或 DEEPSEEK_API_KEY。")
+    parser.add_argument("--api-key", default="", help="DeepSeek API Key；若不传则读取环境变量 DEEPSEEK_API_KEY。")
     parser.add_argument("--api-url", default=os.environ.get("DEEPSEEK_API_URL", DEFAULT_API_URL), help=f"DeepSeek chat completions URL，默认 {DEFAULT_API_URL}")
-    parser.add_argument("--model", default=os.environ.get("GROUP_INSIGHT_MODEL", ""), help=f"模型名；默认 zhipu 用 {DEFAULT_ZHIPU_MODEL}，deepseek 用 {DEFAULT_DEEPSEEK_MODEL}。")
+    parser.add_argument("--model", default="", help=f"DeepSeek 模型名；默认 {DEFAULT_DEEPSEEK_MODEL}。")
+    parser.add_argument("--thinking", action=argparse.BooleanOptionalAction, default=None, help="是否启用 DeepSeek 思考模式；默认读取环境变量 THINKING，未设置时关闭。")
+    parser.add_argument("--reasoning-effort", choices=["high", "max"], default=None, help=f"DeepSeek 思考强度；默认读取环境变量 THINKING_LEVEL，未设置时为 {DEFAULT_DEEPSEEK_REASONING_EFFORT}。")
     parser.add_argument("--max-workers", type=int, default=4, help="map 阶段并行请求数。")
     parser.add_argument("--reduce-fan-in", type=int, default=4, help="每轮 reduce 合并的 shard/bundle 数。")
     parser.add_argument("--chunk-max-messages", type=int, default=500, help="每个 shard 的最大消息数。")
@@ -77,42 +100,31 @@ def parse_args() -> argparse.Namespace:
         help="整个查询区间的有效对话估算 token 不超过该阈值时，整段直接交给模型分析；超过后才切片。",
     )
     parser.add_argument("--direct-max-bytes", type=int, default=DEFAULT_DIRECT_MAX_BYTES, help="整段 direct_range 的 shard 输入 JSON 超过该字节数时，直接改走分片；0 表示不按字节数限制，默认只按 token 阈值决定是否 direct。")
-    parser.add_argument("--no-direct-retry", action="store_true", help="direct_range 单次请求失败时立即停止，不自动回退到分片多次调用。")
+    parser.add_argument("--allow-direct-retry", action="store_true", help="允许 direct_range 失败后自动回退到分片模式重试。默认关闭，避免掩盖真实错误。")
     parser.add_argument("--direct-final-max-tokens", type=int, default=DEFAULT_DIRECT_FINAL_MAX_TOKENS, help="direct_range 单次最终报表调用的最大输出 token。")
     parser.add_argument("--topic-first", action=argparse.BooleanOptionalAction, default=DEFAULT_TOPIC_FIRST, help="direct_range 时先用紧凑全量消息做主题聚类，再按主题分发 section 分析。")
     parser.add_argument("--topic-first-max-topics", type=int, default=DEFAULT_TOPIC_FIRST_MAX_TOPICS, help="topic-first 第一阶段最多生成的主题数。")
     parser.add_argument("--topic-section-max-tokens", type=int, default=DEFAULT_TOPIC_SECTION_MAX_TOKENS, help="topic-first 单个 topic section 调用的最大输出 token。")
+    parser.add_argument("--allow-json-repair", action="store_true", help="允许 DeepSeek 返回损坏 JSON 时自动发起一次修复请求。默认关闭，避免掩盖模型输出问题。")
     parser.add_argument("--output-dir", default="", help="输出目录；不传则自动生成。")
     parser.add_argument("--dry-run", action="store_true", help="不调用 DeepSeek，只验证导出、切片、reduce 和 HTML 渲染。")
-    parser.add_argument("--zhipu-rate-limit-retries", type=int, default=8, help="zhipu 遇到 429/1302 时的总重试次数。")
-    parser.add_argument("--zhipu-min-interval-seconds", type=float, default=1.2, help="zhipu 相邻请求的最小间隔秒数。")
-    parser.add_argument("--zhipu-rate-limit-base-delay", type=float, default=4.0, help="zhipu 429 指数退避的初始秒数。")
-    parser.add_argument("--zhipu-rate-limit-max-delay", type=float, default=90.0, help="zhipu 429 指数退避的最大秒数。")
     parser.add_argument("--no-image", action="store_true", help="跳过浏览器渲染 PNG 导出。")
     parser.add_argument("--image-width", type=int, default=DEFAULT_REPORT_IMAGE_WIDTH, help="导出 PNG 时的浏览器视口宽度。")
     parser.add_argument("--image-timeout-ms", type=int, default=DEFAULT_REPORT_IMAGE_TIMEOUT_MS, help="导出 PNG 时的浏览器等待超时。")
     parser.add_argument("--send-after-run", action=argparse.BooleanOptionalAction, default=DEFAULT_SEND_AFTER_RUN, help="执行完成后发送 PNG 到指定会话。默认读取脚本顶部 DEFAULT_SEND_AFTER_RUN。")
     parser.add_argument("--send-target", action="append", default=None, help="发送目标会话名称；可重复传入，也可用逗号/分号分隔。未传时读取脚本顶部 DEFAULT_SEND_TARGET_CHATS。")
     parser.add_argument("--send-message", default=DEFAULT_SEND_MESSAGE, help="发送 PNG 时附带的文本说明；不传则使用默认摘要。未传时读取脚本顶部 DEFAULT_SEND_MESSAGE。")
-    parser.add_argument("--send-to-filehelper", action="store_true", help="生成 PNG 后，通过 pyweixin 发送到文件传输助手。")
-    parser.add_argument("--filehelper-name", default="", help=f"兼容旧参数；配合 --send-to-filehelper 使用，默认 {DEFAULT_FILEHELPER_NAME}。")
-    parser.add_argument("--filehelper-message", default="", help="兼容旧参数；等价于 --send-message。")
     return parser.parse_args()
 
 
 def resolve_send_delivery(args: argparse.Namespace) -> tuple[bool, list[str], str]:
     """归一化发送开关、目标会话和附带文本。"""
 
-    send_requested = bool(args.send_after_run or args.send_to_filehelper)
+    send_requested = bool(args.send_after_run)
     send_targets = split_send_targets(args.send_target)
     if not send_targets and args.send_after_run:
         send_targets = split_send_targets(DEFAULT_SEND_TARGET_CHATS)
-    if args.send_to_filehelper:
-        filehelper_target = normalize_text(args.filehelper_name) or DEFAULT_FILEHELPER_NAME
-        for target in split_send_targets(filehelper_target):
-            if target not in send_targets:
-                send_targets.append(target)
-    send_text = normalize_text(args.send_message) or normalize_text(args.filehelper_message)
+    send_text = normalize_text(args.send_message)
     return send_requested, send_targets, send_text
 
 
@@ -133,10 +145,10 @@ def main() -> None:
         raise SystemExit("未提供开始时间。请传 --start 或编辑脚本顶部 DEFAULT_ANALYZE_START。")
     if not normalize_text(args.end):
         raise SystemExit("未提供结束时间。请传 --end 或编辑脚本顶部 DEFAULT_ANALYZE_END。")
-    provider, api_key, model = resolve_llm_runtime_config(args)
+    provider = DEFAULT_PROVIDER
+    api_key, model, thinking_enabled, reasoning_effort = resolve_llm_runtime_config(args)
     if not args.dry_run and not api_key:
-        env_name = "ZHIPUAI_API_KEY" if provider == "zhipu" else "DEEPSEEK_API_KEY"
-        raise SystemExit(f"未提供 {provider} API Key。请传 --api-key 或设置环境变量 {env_name}。")
+        raise SystemExit("未提供 DeepSeek API Key。请传 --api-key 或设置环境变量 DEEPSEEK_API_KEY。")
 
     ctx, messages = fetch_structured_messages(args.chat, args.start, args.end)
     if not messages:
@@ -167,6 +179,9 @@ def main() -> None:
         """构造本次运行的缓存签名。"""
 
         return {
+            "llm_model": model,
+            "llm_thinking_enabled": thinking_enabled,
+            "llm_reasoning_effort": reasoning_effort,
             "start_time": args.start,
             "end_time": args.end,
             "message_count": len(messages),
@@ -204,19 +219,15 @@ def main() -> None:
     write_snapshot_files()
 
     client = None if args.dry_run else create_llm_client(
-        provider=provider,
         api_key=api_key,
         model=model,
         api_url=args.api_url,
-        zhipu_rate_limit_retries=args.zhipu_rate_limit_retries,
-        zhipu_min_interval_seconds=args.zhipu_min_interval_seconds,
-        zhipu_rate_limit_base_delay=args.zhipu_rate_limit_base_delay,
-        zhipu_rate_limit_max_delay=args.zhipu_rate_limit_max_delay,
+        allow_json_repair=bool(args.allow_json_repair),
+        thinking_enabled=thinking_enabled,
+        reasoning_effort=reasoning_effort,
     )
 
     effective_max_workers = max(1, args.max_workers)
-    if client is not None and client.provider == "zhipu":
-        effective_max_workers = 1
     use_direct_final = bool(chunk_plan.get("range_direct") and len(chunks) == 1)
     use_topic_first = bool(use_direct_final and args.topic_first and not args.dry_run)
     if client is not None:
@@ -226,9 +237,12 @@ def main() -> None:
             final_label = "topic_plan_calls=1 topic_section_calls<=%d final_calls=0" % max(1, args.topic_first_max_topics)
         else:
             final_label = "direct_final_calls=1" if use_direct_final else "final_calls=1"
+        effort_label = f"effort={getattr(client, 'reasoning_effort', '')} " if getattr(client, "thinking_enabled", False) else ""
         print(
             "[LLMPlan] "
             f"provider={client.provider}/{client.model} "
+            f"thinking={'enabled' if getattr(client, 'thinking_enabled', False) else 'disabled'} "
+            f"{effort_label}"
             f"mode={chunk_plan.get('mode')} "
             f"map_calls={map_call_count} reduce_calls={reduce_call_count} {final_label} "
             f"estimated_tokens={chunk_plan.get('estimated_tokens', 0)} "
@@ -239,33 +253,19 @@ def main() -> None:
     try:
         # 先选择 direct/topic-first 分支，再回退到标准 map-reduce 流程。
         if use_topic_first:
-            try:
-                final_report = run_topic_first_report(
-                    chat_name=ctx["display_name"],
-                    start_time=args.start,
-                    end_time=args.end,
-                    stats=stats,
-                    chunk=chunks[0],
-                    output_dir=output_dir,
-                    dry_run=args.dry_run,
-                    client=client,
-                    max_workers=effective_max_workers,
-                    max_topics=max(4, args.topic_first_max_topics),
-                    section_max_tokens=max(1024, args.topic_section_max_tokens),
-                )
-            except Exception as topic_exc:
-                print(f"[TopicFirstFallback] topic-first 失败，改用 direct-final：{topic_exc}", flush=True)
-                final_report = run_direct_final_stage(
-                    chat_name=ctx["display_name"],
-                    start_time=args.start,
-                    end_time=args.end,
-                    stats=stats,
-                    chunk=chunks[0],
-                    output_dir=output_dir,
-                    dry_run=args.dry_run,
-                    client=client,
-                    max_tokens=max(4096, args.direct_final_max_tokens),
-                )
+            final_report = run_topic_first_report(
+                chat_name=ctx["display_name"],
+                start_time=args.start,
+                end_time=args.end,
+                stats=stats,
+                chunk=chunks[0],
+                output_dir=output_dir,
+                dry_run=args.dry_run,
+                client=client,
+                max_workers=effective_max_workers,
+                max_topics=max(4, args.topic_first_max_topics),
+                section_max_tokens=max(1024, args.topic_section_max_tokens),
+            )
         elif use_direct_final:
             final_report = run_direct_final_stage(
                 chat_name=ctx["display_name"],
@@ -286,7 +286,6 @@ def main() -> None:
                 dry_run=args.dry_run,
                 client=client,
                 max_workers=effective_max_workers,
-                allow_fallback=True,
             )
             reduced_bundles = run_reduce_stage(
                 map_results,
@@ -308,8 +307,11 @@ def main() -> None:
     except Exception as exc:
         if not (chunk_plan.get("range_direct") and not args.dry_run and len(chunks) == 1):
             raise
-        if args.no_direct_retry:
-            raise SystemExit(f"direct_range 单次请求失败，已按 --no-direct-retry 停止：{exc}") from exc
+        if not args.allow_direct_retry:
+            raise SystemExit(
+                "direct_range 单次请求失败，已按默认快速失败停止。"
+                "如需自动回退到分片模式，请显式传 --allow-direct-retry。"
+            ) from exc
         print(f"[DirectRangeRetry] direct_range 单次请求失败，准备改用分片重试：{exc}", flush=True)
         # direct-range 失败时重新切分，再走一次完整的分片流程。
         chunks, chunk_plan = build_sharded_range_chunks(
@@ -341,7 +343,6 @@ def main() -> None:
             dry_run=args.dry_run,
             client=client,
             max_workers=effective_max_workers,
-            allow_fallback=True,
         )
         reduced_bundles = run_reduce_stage(
             map_results,
@@ -439,13 +440,6 @@ def main() -> None:
     )
     print(f"模型: {provider} / {model}")
     print(f"map 并发: {effective_max_workers}")
-    if provider == "zhipu":
-        print(
-            "zhipu 限频策略: "
-            f"retries={args.zhipu_rate_limit_retries}, "
-            f"min_interval={args.zhipu_min_interval_seconds}s, "
-            f"backoff={args.zhipu_rate_limit_base_delay}s..{args.zhipu_rate_limit_max_delay}s"
-        )
     print(f"输出目录: {output_dir}")
     print(f"JSON: {output_dir / 'group_insight_report.json'}")
     print(f"HTML: {html_output_path}")

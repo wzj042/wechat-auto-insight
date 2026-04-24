@@ -17,8 +17,6 @@ import os
 import re
 import shutil
 import sys
-import threading
-import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -75,13 +73,15 @@ else:
 
 
 # 可直接改这里:
-# 默认 LLM 提供方；可选 "zhipu" / "deepseek"。命令行 --provider 会覆盖它。
+# 默认 LLM 提供方固定为 deepseek。
 DEFAULT_PROVIDER = "deepseek"
 DEFAULT_API_URL = "https://api.deepseek.com/chat/completions"
-# deepseek provider 的默认模型；命令行 --model 会覆盖它。
-DEFAULT_DEEPSEEK_MODEL = "deepseek-chat"
-# zhipu provider 的默认模型；命令行 --model 会覆盖它。
-DEFAULT_ZHIPU_MODEL = "glm-4.5-flash"
+# DeepSeek 默认模型；命令行 --model 会覆盖它。
+DEFAULT_DEEPSEEK_MODEL = "deepseek-v4-flash"
+# DeepSeek 默认关闭思考模式；命令行 --thinking 或环境变量 THINKING 会覆盖它。
+DEFAULT_DEEPSEEK_THINKING = False
+# 思考模式开启时默认推理强度。
+DEFAULT_DEEPSEEK_REASONING_EFFORT = "high"
 # 默认要分析的群聊名称或 chatroom id；留空时必须通过 --chat 传入。
 DEFAULT_ANALYZE_CHAT = "有氧运动聊天"
 # 默认自动时间窗。True 时自动分析“昨日 DEFAULT_AUTO_TIME_CUTOFF 到今日 DEFAULT_AUTO_TIME_CUTOFF”。
@@ -109,13 +109,14 @@ RECORDITEM_XML_MAX_LEN = 240000
 DEFAULT_REPORT_IMAGE_WIDTH = 760
 DEFAULT_REPORT_IMAGE_TIMEOUT_MS = 20000
 DEFAULT_DIRECT_MAX_BYTES = 0
-DEFAULT_FILEHELPER_NAME = "文件传输助手"
+DEFAULT_STRUCTURED_STAGE_MAX_TOKENS = 4096
+DEFAULT_STRUCTURED_STAGE_MAX_TOKENS_THINKING = 8192
 DEFAULT_DIRECT_FINAL_MAX_TOKENS = 8192
 DEFAULT_DIRECT_FINAL_MIN_TOKENS = 2048
 DEFAULT_TOPIC_FIRST = False
 DEFAULT_TOPIC_FIRST_MAX_TOPICS = 16
 DEFAULT_TOPIC_SECTION_MAX_TOKENS = 3072
-DEEPSEEK_CONTEXT_WINDOW_TOKENS = 131072
+DEEPSEEK_CONTEXT_WINDOW_TOKENS = 1_000_000
 DEEPSEEK_INPUT_CACHE_HIT_USD_PER_M_TOKEN = 0.028
 DEEPSEEK_INPUT_CACHE_MISS_USD_PER_M_TOKEN = 0.28
 DEEPSEEK_OUTPUT_USD_PER_M_TOKEN = 0.42
@@ -124,8 +125,6 @@ WORD_TOKEN_PATTERN = re.compile(r"[A-Za-z0-9]+(?:[._'/-][A-Za-z0-9]+)*")
 SINGLE_CJK_PATTERN = re.compile(r"[\u3400-\u9fff]")
 WECHAT_EMOJI_SHORTCODE_PATTERN = re.compile(r"\[[\u3400-\u9fff]{1,12}\]")
 _GROUP_NICKNAME_CACHE: dict[str, dict[str, str]] = {}
-_ZHIPU_RATE_LOCK = threading.Lock()
-_ZHIPU_LAST_CALL_AT = 0.0
 WORD_CLOUD_STOPWORDS = {
     "我们", "你们", "他们", "这个", "那个", "真的", "感觉", "今天", "昨天", "现在", "就是",
     "然后", "因为", "所以", "还是", "已经", "一个", "一下", "没有", "不是", "怎么", "什么",
@@ -141,34 +140,24 @@ WORD_CLOUD_STOPWORDS = {
 def load_local_env() -> None:
     """从本地 `.env` 文件加载环境变量。
 
-    优先读取仓库根目录，再兼容当前工作目录和父目录。已存在于 `os.environ`
-    的键不会被覆盖，便于任务计划或外部 shell 显式传入变量。
+    只读取仓库根目录 `.env`。已存在于 `os.environ` 的键不会被覆盖，
+    便于任务计划或外部 shell 显式传入变量。
     """
 
-    raw_candidates = [SCRIPT_DIR / ".env", Path.cwd() / ".env", SCRIPT_DIR.parent / ".env"]
-    candidates: list[Path] = []
-    seen_paths: set[Path] = set()
-    for candidate in raw_candidates:
-        resolved = candidate.resolve()
-        if resolved in seen_paths:
+    env_path = (SCRIPT_DIR / ".env").resolve()
+    if not env_path.exists():
+        return
+    for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.lstrip("\ufeff").strip()
+        if line.startswith("export "):
+            line = line[len("export ") :].strip()
+        if not line or line.startswith("#") or "=" not in line:
             continue
-        seen_paths.add(resolved)
-        candidates.append(resolved)
-
-    for env_path in candidates:
-        if not env_path.exists():
-            continue
-        for raw_line in env_path.read_text(encoding="utf-8").splitlines():
-            line = raw_line.lstrip("\ufeff").strip()
-            if line.startswith("export "):
-                line = line[len("export ") :].strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            key, value = line.split("=", 1)
-            key = key.strip()
-            value = value.strip().strip('"').strip("'")
-            if key and key not in os.environ:
-                os.environ[key] = value
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key and key not in os.environ:
+            os.environ[key] = value
 
 
 load_local_env()

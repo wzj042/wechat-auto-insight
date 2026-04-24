@@ -765,24 +765,28 @@ def log_llm_request_estimate(
     client: Any | None,
     system_prompt: str,
     user_prompt: str,
-    max_tokens: int,
+    max_tokens: int | None,
 ) -> None:
     """打印一次 LLM 请求的 token 和成本估算日志。"""
     input_tokens = estimate_prompt_tokens(system_prompt, user_prompt)
     provider = client.provider if client else "none"
     model = client.model if client else ""
+    output_budget = f"output<= {max_tokens} tokens" if max_tokens is not None else "output budget=default"
     message = (
         f"[LLMEstimate] {stage} provider={provider}"
         f"{('/' + model) if model else ''} "
-        f"input~{input_tokens} tokens, output<= {max_tokens} tokens"
+        f"input~{input_tokens} tokens, {output_budget}"
     )
     if provider == "deepseek":
-        miss_cost = estimate_deepseek_cost_usd(input_tokens, max_tokens, cache_hit=False)
-        hit_cost = estimate_deepseek_cost_usd(input_tokens, max_tokens, cache_hit=True)
-        message += (
-            f", DeepSeek cost~{format_usd(miss_cost)}"
-            f" (cache hit~{format_usd(hit_cost)})"
-        )
+        if max_tokens is not None:
+            miss_cost = estimate_deepseek_cost_usd(input_tokens, max_tokens, cache_hit=False)
+            hit_cost = estimate_deepseek_cost_usd(input_tokens, max_tokens, cache_hit=True)
+            message += (
+                f", DeepSeek cost~{format_usd(miss_cost)}"
+                f" (cache hit~{format_usd(hit_cost)})"
+            )
+        else:
+            message += ", DeepSeek cost estimate unavailable without explicit output budget"
     else:
         message += ", cost estimate unavailable for this provider"
     print(message, flush=True)
@@ -1306,20 +1310,6 @@ def estimate_reduce_call_count(item_count: int, fan_in: int) -> int:
         total += groups
         current = groups
     return total
-
-
-def build_topic_retry_chunks(chunk: MessageChunk) -> list[MessageChunk]:
-    """在单个 map 片段失败时生成更小的主题重试分片。"""
-    return build_chunks(
-        chunk.messages,
-        max_messages=min(220, max(80, chunk.message_count // 2)),
-        max_chars=min(12000, max(5000, chunk.char_count // 2)),
-        max_minutes=120,
-        hard_gap_minutes=45,
-        soft_gap_minutes=10,
-        low_similarity_threshold=0.14,
-        min_chunk_messages=10,
-    )
 
 
 def normalize_rank_name(name: str) -> str:

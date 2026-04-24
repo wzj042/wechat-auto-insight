@@ -1,12 +1,11 @@
 """LLM 客户端封装与群聊日报 prompt 构造。
 
-这里统一 DeepSeek、智谱等模型的 JSON 调用接口，并集中维护 map、reduce、final、
+这里统一 DeepSeek 的 JSON 调用接口，并集中维护 map、reduce、final、
 direct-final 和 topic-first 模式使用的结构化提示词。
 """
 from __future__ import annotations
 
 from .conversation import *
-from .settings import _ZHIPU_LAST_CALL_AT, _ZHIPU_RATE_LOCK
 
 
 class LLMClientProtocol:
@@ -18,17 +17,11 @@ class LLMClientProtocol:
         self,
         system_prompt: str,
         user_prompt: str,
-        max_tokens: int = 4096,
+        max_tokens: int | None = None,
         temperature: float = 0.2,
     ) -> dict[str, Any]:
         """调用模型并返回解析后的 JSON 对象。"""
         raise NotImplementedError
-
-
-def is_rate_limit_error(exc: Exception) -> bool:
-    """判断异常文本是否表示模型接口限频。"""
-    text = str(exc or "").lower()
-    return any(token in text for token in ["429", "1302", "rate limit", "速率限制"])
 
 
 class DeepSeekClient(LLMClientProtocol):
@@ -40,6 +33,9 @@ class DeepSeekClient(LLMClientProtocol):
         api_url: str = DEFAULT_API_URL,
         timeout: int = 180,
         max_retries: int = 3,
+        allow_json_repair: bool = False,
+        thinking_enabled: bool = DEFAULT_DEEPSEEK_THINKING,
+        reasoning_effort: str = DEFAULT_DEEPSEEK_REASONING_EFFORT,
     ) -> None:
         """初始化客户端配置和限频/重试参数。"""
         self.provider = "deepseek"
@@ -48,12 +44,15 @@ class DeepSeekClient(LLMClientProtocol):
         self.api_url = api_url
         self.timeout = timeout
         self.max_retries = max_retries
+        self.allow_json_repair = allow_json_repair
+        self.thinking_enabled = bool(thinking_enabled)
+        self.reasoning_effort = reasoning_effort
 
     def chat_json(
         self,
         system_prompt: str,
         user_prompt: str,
-        max_tokens: int = 4096,
+        max_tokens: int | None = None,
         temperature: float = 0.2,
     ) -> dict[str, Any]:
         """调用模型并返回解析后的 JSON 对象。"""
@@ -72,7 +71,7 @@ class DeepSeekClient(LLMClientProtocol):
                 return safe_json_loads(content)
             except (urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError, ValueError, RuntimeError) as exc:
                 last_error = exc
-                if isinstance(exc, json.JSONDecodeError):
+                if isinstance(exc, json.JSONDecodeError) and self.allow_json_repair:
                     try:
                         repaired = self._repair_json(
                             broken_json=content,
@@ -91,21 +90,16 @@ class DeepSeekClient(LLMClientProtocol):
         self,
         system_prompt: str,
         user_prompt: str,
-        max_tokens: int,
+        max_tokens: int | None,
         temperature: float,
     ) -> str:
         """发送一次 HTTP 请求并返回模型原始文本内容。"""
-        payload = {
-            "model": self.model,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            "response_format": {"type": "json_object"},
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-            "stream": False,
-        }
+        payload = self._build_payload(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            max_tokens=max_tokens,
+            temperature=temperature,
+        )
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         request = urllib.request.Request(
             self.api_url,
@@ -147,7 +141,32 @@ class DeepSeekClient(LLMClientProtocol):
             .get("content", "")
         )
 
-    def _repair_json(self, broken_json: str, max_tokens: int) -> str:
+    def _build_payload(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        max_tokens: int | None,
+        temperature: float,
+    ) -> dict[str, Any]:
+        """构造一次 DeepSeek chat completion 请求体。"""
+        payload = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            "response_format": {"type": "json_object"},
+            "temperature": temperature,
+            "stream": False,
+        }
+        payload["thinking"] = {"type": "enabled" if self.thinking_enabled else "disabled"}
+        if self.thinking_enabled and self.reasoning_effort:
+            payload["reasoning_effort"] = self.reasoning_effort
+        if max_tokens is not None and max_tokens > 0:
+            payload["max_tokens"] = max_tokens
+        return payload
+
+    def _repair_json(self, broken_json: str, max_tokens: int | None) -> str:
         """在 DeepSeek 返回 JSON 截断或损坏时请求模型修复。"""
         candidate = extract_json_object(broken_json) or broken_json
         candidate = candidate.strip()
@@ -172,77 +191,35 @@ class DeepSeekClient(LLMClientProtocol):
         return self._request_content(
             system_prompt=repair_system_prompt,
             user_prompt=repair_user_prompt,
-            max_tokens=min(max_tokens, 4096),
+            max_tokens=min(max_tokens, 4096) if max_tokens is not None else 4096,
             temperature=0.0,
         )
 
 
-class ZhipuClient(LLMClientProtocol):
-    """智谱模型 JSON 调用客户端，带串行限频和指数退避。"""
-    def __init__(
-        self,
-        api_key: str,
-        model: str = DEFAULT_ZHIPU_MODEL,
-        max_retries: int = 8,
-        min_interval_seconds: float = 1.2,
-        rate_limit_base_delay: float = 4.0,
-        rate_limit_max_delay: float = 90.0,
-    ) -> None:
-        """初始化客户端配置和限频/重试参数。"""
-        try:
-            from zhipuai_tool import create_zhipu_client
-        except Exception as exc:
-            raise RuntimeError(f"无法导入 zhipuai_tool: {exc}") from exc
+def llm_cache_identity(client: LLMClientProtocol | None) -> str:
+    """生成用于阶段缓存指纹的 LLM 配置标识。"""
+    if client is None:
+        return ""
+    parts = [client.provider, client.model]
+    thinking_enabled = getattr(client, "thinking_enabled", None)
+    if thinking_enabled is not None:
+        parts.append("thinking=enabled" if thinking_enabled else "thinking=disabled")
+    reasoning_effort = getattr(client, "reasoning_effort", "")
+    if thinking_enabled and reasoning_effort:
+        parts.append(f"effort={reasoning_effort}")
+    return "|".join(parts)
 
-        self.provider = "zhipu"
-        self.model = model
-        self.max_retries = max_retries
-        self.min_interval_seconds = min_interval_seconds
-        self.rate_limit_base_delay = rate_limit_base_delay
-        self.rate_limit_max_delay = rate_limit_max_delay
-        self.client = create_zhipu_client(api_key, max_retries=0)
-        setattr(self.client, "MODEL_TEXT", model)
 
-    def chat_json(
-        self,
-        system_prompt: str,
-        user_prompt: str,
-        max_tokens: int = 4096,
-        temperature: float = 0.2,
-    ) -> dict[str, Any]:
-        """调用模型并返回解析后的 JSON 对象。"""
-        global _ZHIPU_LAST_CALL_AT
-        last_error: Exception | None = None
-        for attempt in range(1, self.max_retries + 1):
-            try:
-                with _ZHIPU_RATE_LOCK:
-                    now = time.time()
-                    wait_seconds = self.min_interval_seconds - (now - _ZHIPU_LAST_CALL_AT)
-                    if wait_seconds > 0:
-                        time.sleep(wait_seconds)
-                    _ZHIPU_LAST_CALL_AT = time.time()
-                result = self.client.text_chat(
-                    prompt=user_prompt,
-                    messages=[{"role": "system", "content": system_prompt}],
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                )
-                return safe_json_loads(result.get("content", ""))
-            except (json.JSONDecodeError, ValueError, RuntimeError, TypeError) as exc:
-                last_error = exc
-                if is_rate_limit_error(exc) and attempt < self.max_retries:
-                    delay = min(self.rate_limit_max_delay, self.rate_limit_base_delay * (2 ** (attempt - 1)))
-                    print(f"[ZhipuBackoff] rate limited, waiting {delay:.1f}s before retry {attempt + 1}/{self.max_retries}")
-                    time.sleep(delay)
-                    continue
-            except Exception as exc:
-                last_error = exc
-                if is_rate_limit_error(exc) and attempt < self.max_retries:
-                    delay = min(self.rate_limit_max_delay, self.rate_limit_base_delay * (2 ** (attempt - 1)))
-                    print(f"[ZhipuBackoff] rate limited, waiting {delay:.1f}s before retry {attempt + 1}/{self.max_retries}")
-                    time.sleep(delay)
-                    continue
-        raise RuntimeError(f"Zhipu 调用失败: {last_error}")
+def structured_stage_max_tokens_for_client(
+    client: LLMClientProtocol | None,
+    base_max_tokens: int = DEFAULT_STRUCTURED_STAGE_MAX_TOKENS,
+) -> int:
+    """为固定结构化阶段选择合适的输出预算。"""
+    if client is None or client.provider != "deepseek":
+        return base_max_tokens
+    if not getattr(client, "thinking_enabled", False):
+        return base_max_tokens
+    return max(base_max_tokens, DEFAULT_STRUCTURED_STAGE_MAX_TOKENS_THINKING)
 
 
 MAP_SCHEMA_EXAMPLE = {

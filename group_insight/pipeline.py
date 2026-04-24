@@ -1,68 +1,23 @@
 """群聊日报的 LLM 分析流水线。
 
 根据输入规模选择 map/reduce/final、direct-final 或 topic-first 路径，并为每个阶段
-落盘输入输出与指纹缓存，保证失败后可回退、重跑时可复用。
+落盘输入输出与指纹缓存，保证重跑时可复用。
 """
 from __future__ import annotations
 
 from .report_model import *
-
-
-def analyze_failed_chunk_by_topics(
-    chunk: MessageChunk,
-    chat_name: str,
-    client: LLMClientProtocol | None,
-) -> dict[str, Any]:
-    """当 map 分片调用失败时，进一步按主题拆小并合并结果。"""
-    if client is None:
-        return fallback_map_analysis(chunk)
-
-    subchunks = build_topic_retry_chunks(chunk)
-    if len(subchunks) <= 1:
-        return fallback_map_analysis(chunk)
-
-    sub_results: list[dict[str, Any]] = []
-    for index, subchunk in enumerate(subchunks, start=1):
-        subchunk.id = f"{chunk.id}-topic-{index:02d}"
-        subchunk.index = index
-        system_prompt, user_prompt = build_map_prompts(chat_name, subchunk)
-        try:
-            log_llm_request_estimate(f"topic-map:{subchunk.id}", client, system_prompt, user_prompt, 4096)
-            result = client.chat_json(system_prompt, user_prompt, max_tokens=4096, temperature=0.2)
-        except Exception as sub_exc:
-            print(f"[TopicMapFallback] {subchunk.id} -> {sub_exc}")
-            result = fallback_map_analysis(subchunk)
-        result.setdefault("shard_id", subchunk.id)
-        result.setdefault("time_range", {"start": subchunk.start_time, "end": subchunk.end_time})
-        sub_results.append(result)
-
-    try:
-        system_prompt, user_prompt = build_reduce_prompts(f"{chunk.id}-topic-merge", sub_results)
-        log_llm_request_estimate(f"topic-reduce:{chunk.id}", client, system_prompt, user_prompt, 4096)
-        merged = client.chat_json(system_prompt, user_prompt, max_tokens=4096, temperature=0.2)
-    except Exception as merge_exc:
-        print(f"[TopicReduceFallback] {chunk.id} -> {merge_exc}")
-        merged = fallback_reduce_bundle(f"{chunk.id}-topic-merge", sub_results)
-
-    merged["shard_id"] = chunk.id
-    merged["time_range"] = {"start": chunk.start_time, "end": chunk.end_time}
-    merged.setdefault("summary", f"{len(sub_results)} 个主题簇的合并摘要。")
-    return merged
-
-
 def run_map_stage(
     chunks: list[MessageChunk],
     output_dir: Path,
     dry_run: bool,
     client: LLMClientProtocol | None,
     max_workers: int,
-    allow_fallback: bool = True,
 ) -> list[dict[str, Any]]:
     """并发执行 map 阶段，生成每个消息片段的结构化分析。"""
     map_dir = ensure_dir(output_dir / "map")
 
     def analyze_chunk(chunk: MessageChunk) -> dict[str, Any]:
-        """分析单个分片并处理缓存、dry-run 和失败回退。"""
+        """分析单个分片并处理缓存与 dry-run 路径。"""
         chunk_input = chunk_payload(chunk)
         input_path = map_dir / f"{chunk.id}.input.json"
         output_path = map_dir / f"{chunk.id}.output.json"
@@ -75,7 +30,7 @@ def run_map_stage(
             "map",
             chunk_input,
             dry_run=dry_run,
-            model=f"{client.provider}:{client.model}" if client else "",
+            model=llm_cache_identity(client),
             system_prompt=system_prompt,
             user_prompt=user_prompt,
         )
@@ -91,17 +46,9 @@ def run_map_stage(
         else:
             if client is None:
                 raise RuntimeError("LLM client 未初始化")
-            try:
-                log_llm_request_estimate(f"map:{chunk.id}", client, system_prompt, user_prompt, 4096)
-                result = client.chat_json(system_prompt, user_prompt, max_tokens=4096, temperature=0.2)
-            except Exception as exc:
-                if not allow_fallback:
-                    raise
-                print(f"[MapFallback] {chunk.id} -> {exc}")
-                if client is not None and client.provider == "zhipu" and is_rate_limit_error(exc):
-                    result = fallback_map_analysis(chunk)
-                else:
-                    result = analyze_failed_chunk_by_topics(chunk, chat_name, client)
+            stage_max_tokens = structured_stage_max_tokens_for_client(client)
+            log_llm_request_estimate(f"map:{chunk.id}", client, system_prompt, user_prompt, stage_max_tokens)
+            result = client.chat_json(system_prompt, user_prompt, max_tokens=stage_max_tokens, temperature=0.2)
 
         write_stage_output(output_path, result, fingerprint)
         return result
@@ -141,7 +88,7 @@ def reduce_once(
             "reduce",
             {"bundle_id": bundle_id, "items": group_items},
             dry_run=dry_run,
-            model=f"{client.provider}:{client.model}" if client else "",
+            model=llm_cache_identity(client),
             system_prompt=system_prompt,
             user_prompt=user_prompt,
         )
@@ -155,13 +102,10 @@ def reduce_once(
         else:
             if client is None:
                 raise RuntimeError("LLM client 未初始化")
-            try:
-                log_llm_request_estimate(f"reduce:{bundle_id}", client, system_prompt, user_prompt, 4096)
-                bundle = client.chat_json(system_prompt, user_prompt, max_tokens=4096, temperature=0.2)
-                bundle.setdefault("bundle_id", bundle_id)
-            except Exception as exc:
-                print(f"[ReduceFallback] {bundle_id} -> {exc}")
-                bundle = fallback_reduce_bundle(bundle_id, group_items)
+            stage_max_tokens = structured_stage_max_tokens_for_client(client)
+            log_llm_request_estimate(f"reduce:{bundle_id}", client, system_prompt, user_prompt, stage_max_tokens)
+            bundle = client.chat_json(system_prompt, user_prompt, max_tokens=stage_max_tokens, temperature=0.2)
+            bundle.setdefault("bundle_id", bundle_id)
 
         write_stage_output(output_path, bundle, fingerprint)
         results.append(bundle)
@@ -215,7 +159,7 @@ def run_final_stage(
         "final",
         payload,
         dry_run=dry_run,
-        model=f"{client.provider}:{client.model}" if client else "",
+        model=llm_cache_identity(client),
         system_prompt=system_prompt,
         user_prompt=user_prompt,
     )
@@ -229,12 +173,9 @@ def run_final_stage(
     else:
         if client is None:
             raise RuntimeError("LLM client 未初始化")
-        try:
-            log_llm_request_estimate("final", client, system_prompt, user_prompt, 4096)
-            report = client.chat_json(system_prompt, user_prompt, max_tokens=4096, temperature=0.2)
-        except Exception as exc:
-            print(f"[FinalFallback] {chat_name} -> {exc}")
-            report = fallback_final_report(chat_name, start_time, end_time, stats, bundles)
+        stage_max_tokens = structured_stage_max_tokens_for_client(client)
+        log_llm_request_estimate("final", client, system_prompt, user_prompt, stage_max_tokens)
+        report = client.chat_json(system_prompt, user_prompt, max_tokens=stage_max_tokens, temperature=0.2)
 
     report = repair_final_report(report, chat_name, start_time, end_time, stats, bundles)
     write_stage_output(output_path, report, fingerprint)
@@ -386,7 +327,7 @@ def run_topic_first_report(
         "topic_plan",
         plan_payload,
         dry_run=dry_run,
-        model=f"{client.provider}:{client.model}" if client else "",
+        model=llm_cache_identity(client),
         system_prompt=system_prompt,
         user_prompt=user_prompt,
     )
@@ -396,8 +337,9 @@ def run_topic_first_report(
             raise RuntimeError("topic-first dry-run 需要 LLM 输出 topic plan")
         if client is None:
             raise RuntimeError("LLM client 未初始化")
-        log_llm_request_estimate("topic-plan", client, system_prompt, user_prompt, 4096)
-        raw_plan = client.chat_json(system_prompt, user_prompt, max_tokens=4096, temperature=0.2)
+        stage_max_tokens = structured_stage_max_tokens_for_client(client)
+        log_llm_request_estimate("topic-plan", client, system_prompt, user_prompt, stage_max_tokens)
+        raw_plan = client.chat_json(system_prompt, user_prompt, max_tokens=stage_max_tokens, temperature=0.2)
         topics = normalize_topic_plan(raw_plan, chunk, max_topics)
         if not topics:
             raise RuntimeError("topic-first 未生成有效主题")
@@ -430,7 +372,7 @@ def run_topic_first_report(
             "topic_section",
             payload,
             dry_run=dry_run,
-            model=f"{client.provider}:{client.model}" if client else "",
+            model=llm_cache_identity(client),
             system_prompt=section_system,
             user_prompt=section_user,
         )
@@ -487,7 +429,7 @@ def run_direct_final_stage(
         "direct_final",
         payload,
         dry_run=dry_run,
-        model=f"{client.provider}:{client.model}" if client else "",
+        model=llm_cache_identity(client),
         system_prompt=system_prompt,
         user_prompt=user_prompt,
     )
