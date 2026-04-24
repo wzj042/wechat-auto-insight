@@ -96,8 +96,8 @@ DEFAULT_ANALYZE_END = ""
 DEFAULT_SEND_AFTER_RUN = True
 # 默认发送目标会话列表；可以包含“文件传输助手”、好友或群聊名称；@TODO 这会批量发送有点问题
 DEFAULT_SEND_TARGET_CHATS = [
-    # "有氧运动聊天",
-    "文件传输助手",
+    "有氧运动聊天",
+    "禁言｜有氧群布告栏",
     ]
 # 默认附带文本；留空时使用脚本自动生成的摘要。
 DEFAULT_SEND_MESSAGE = datetime.now().strftime("%m-%d") + "日报已发送"
