@@ -68,13 +68,12 @@ def send_to_filehelper(message):
         return False
 
 
-def send_to_regular_friend(friend, message):
-    """发送给普通好友"""
+def send_to_group_chat(friend, message):
+    """发送给群聊：优先顶部全局搜索，失败则回退到会话列表翻页"""
+    # 尝试方式1：顶部全局搜索（对群聊最可靠）
     try:
-        print(f"\n📨 正在发送给：{friend}")
-
-        # type: ignore (search_pages应该是int，但pywechat类型注解错误写成bool)
-        Messages.send_messages_to_friend(
+        print(f"\n📨 方式1（顶部搜索）正在发送给：{friend}")
+        Messages.send_messages_to_friend(  # type: ignore
             friend=friend,
             messages=[message],
             search_pages=0,  # type: ignore
@@ -82,12 +81,26 @@ def send_to_regular_friend(friend, message):
             is_maximize=False,
             close_weixin=False
         )
-
         print(f"   ✅ 成功发送给：{friend}")
         return True
-
     except Exception as e:
-        print(f"   ❌ 发送给 {friend} 失败：{str(e)}")
+        print(f"   ⚠️  方式1失败：{str(e)}")
+
+    # 尝试方式2：会话列表翻页查找
+    try:
+        print(f"\n📨 方式2（会话列表翻页）正在发送给：{friend}")
+        Messages.send_messages_to_friend(  # type: ignore
+            friend=friend,
+            messages=[message],
+            search_pages=5,  # type: ignore
+            send_delay=0.3,
+            is_maximize=False,
+            close_weixin=False
+        )
+        print(f"   ✅ 成功发送给：{friend}")
+        return True
+    except Exception as e:
+        print(f"   ❌ 方式2也失败：{str(e)}")
         return False
 
 
@@ -210,13 +223,9 @@ def test_send_to_multiple_targets():
     # 使用专门的函数处理每个目标
     success_count = 0
     for target, message in targets.items():
-        if target == "文件传输助手":
-            if send_to_filehelper(message):
-                success_count += 1
-        else:
-            if send_to_regular_friend(target, message):
-                success_count += 1
-        time.sleep(1)  # 每个目标之间间隔1秒
+        if send_to_group_chat(target, message):
+            success_count += 1
+        time.sleep(1.5)  # 每个目标之间间隔1.5秒，避免操作过快
 
     print(f"\n🎉 发送完成！成功：{success_count}/{len(targets)}")
     return success_count == len(targets)
