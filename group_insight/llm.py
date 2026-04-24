@@ -123,18 +123,6 @@ class DeepSeekClient(LLMClientProtocol):
                 raise RuntimeError(f"HTTP {exc.code} {exc.reason}: {detail[:1000]}") from exc
             raise
         parsed = json.loads(raw)
-        usage = parsed.get("usage", {})
-        if usage:
-            cost = estimate_deepseek_usage_cost_usd(usage)
-            print(
-                "[LLMUsage] deepseek "
-                f"prompt={usage.get('prompt_tokens', 0)} "
-                f"cache_hit={usage.get('prompt_cache_hit_tokens', 0)} "
-                f"cache_miss={usage.get('prompt_cache_miss_tokens', 0)} "
-                f"completion={usage.get('completion_tokens', 0)} "
-                f"cost~{format_usd(cost)}",
-                flush=True,
-            )
         return (
             parsed.get("choices", [{}])[0]
             .get("message", {})
@@ -165,6 +153,34 @@ class DeepSeekClient(LLMClientProtocol):
         if max_tokens is not None and max_tokens > 0:
             payload["max_tokens"] = max_tokens
         return payload
+
+    def get_user_balance(self) -> dict[str, Any]:
+        """查询当前 DeepSeek 账号余额。"""
+        balance_url = build_deepseek_balance_url(self.api_url)
+        request = urllib.request.Request(
+            balance_url,
+            headers={
+                "Accept": "application/json",
+                "Authorization": f"Bearer {self.api_key}",
+            },
+            method="GET",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                raw = response.read().decode("utf-8")
+        except urllib.error.HTTPError as exc:
+            detail = ""
+            try:
+                detail = exc.read().decode("utf-8", errors="replace")
+            except Exception:
+                detail = ""
+            if detail:
+                raise RuntimeError(f"HTTP {exc.code} {exc.reason}: {detail[:1000]}") from exc
+            raise
+        parsed = json.loads(raw)
+        if not isinstance(parsed, dict):
+            raise RuntimeError("DeepSeek 余额接口返回了非对象响应")
+        return parsed
 
     def _repair_json(self, broken_json: str, max_tokens: int | None) -> str:
         """在 DeepSeek 返回 JSON 截断或损坏时请求模型修复。"""
@@ -208,6 +224,58 @@ def llm_cache_identity(client: LLMClientProtocol | None) -> str:
     if thinking_enabled and reasoning_effort:
         parts.append(f"effort={reasoning_effort}")
     return "|".join(parts)
+
+
+def build_deepseek_balance_url(api_url: str) -> str:
+    """从 chat completions 地址推导余额查询地址。"""
+    parsed = urllib.parse.urlsplit(api_url)
+    if not parsed.scheme or not parsed.netloc:
+        raise ValueError(f"无法从 API URL 推导余额接口地址: {api_url}")
+    return urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, "/user/balance", "", ""))
+
+
+def format_balance_snapshot(snapshot: dict[str, Any]) -> str:
+    """把余额快照格式化为易读文本。"""
+    status = "available" if snapshot.get("is_available") else "unavailable"
+    infos = snapshot.get("balance_infos", [])
+    if not isinstance(infos, list) or not infos:
+        return f"status={status}"
+    parts: list[str] = [f"status={status}"]
+    for info in infos:
+        if not isinstance(info, dict):
+            continue
+        currency = str(info.get("currency") or "UNKNOWN")
+        total = str(info.get("total_balance") or "0")
+        granted = str(info.get("granted_balance") or "0")
+        topped_up = str(info.get("topped_up_balance") or "0")
+        parts.append(f"{currency}: total={total} granted={granted} topped_up={topped_up}")
+    return " | ".join(parts)
+
+
+def format_balance_delta(before: dict[str, Any], after: dict[str, Any]) -> str:
+    """对比两次余额快照并输出差值。"""
+    before_infos = {
+        str(item.get("currency") or "UNKNOWN"): item
+        for item in before.get("balance_infos", [])
+        if isinstance(item, dict)
+    }
+    after_infos = {
+        str(item.get("currency") or "UNKNOWN"): item
+        for item in after.get("balance_infos", [])
+        if isinstance(item, dict)
+    }
+    currencies = sorted(set(before_infos) | set(after_infos))
+    if not currencies:
+        return "no balance info"
+    parts: list[str] = []
+    for currency in currencies:
+        before_total = float(before_infos.get(currency, {}).get("total_balance") or 0)
+        after_total = float(after_infos.get(currency, {}).get("total_balance") or 0)
+        delta = after_total - before_total
+        parts.append(
+            f"{currency}: {before_total:.4f} -> {after_total:.4f} (delta {delta:+.4f})"
+        )
+    return " | ".join(parts)
 
 
 def structured_stage_max_tokens_for_client(

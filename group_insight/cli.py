@@ -69,6 +69,20 @@ def create_llm_client(
     )
 
 
+def capture_balance_snapshot(client: LLMClientProtocol | None, stage: str) -> dict[str, Any] | None:
+    """在任务前后抓取一次 DeepSeek 余额快照。"""
+    getter = getattr(client, "get_user_balance", None)
+    if client is None or not callable(getter):
+        return None
+    try:
+        snapshot = getter()
+    except Exception as exc:
+        print(f"[BalanceCheckFailed] {stage}: {exc}", flush=True)
+        return None
+    print(f"[BalanceSnapshot] {stage}: {format_balance_snapshot(snapshot)}", flush=True)
+    return snapshot
+
+
 def parse_args() -> argparse.Namespace:
     """解析日报脚本的命令行参数。"""
 
@@ -82,29 +96,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model", default="", help=f"DeepSeek 模型名；默认 {DEFAULT_DEEPSEEK_MODEL}。")
     parser.add_argument("--thinking", action=argparse.BooleanOptionalAction, default=None, help="是否启用 DeepSeek 思考模式；默认读取环境变量 THINKING，未设置时关闭。")
     parser.add_argument("--reasoning-effort", choices=["high", "max"], default=None, help=f"DeepSeek 思考强度；默认读取环境变量 THINKING_LEVEL，未设置时为 {DEFAULT_DEEPSEEK_REASONING_EFFORT}。")
-    parser.add_argument("--max-workers", type=int, default=4, help="map 阶段并行请求数。")
-    parser.add_argument("--reduce-fan-in", type=int, default=4, help="每轮 reduce 合并的 shard/bundle 数。")
-    parser.add_argument("--chunk-max-messages", type=int, default=500, help="每个 shard 的最大消息数。")
-    parser.add_argument("--chunk-max-chars", type=int, default=24000, help="每个 shard 的最大字符预算。")
-    parser.add_argument("--chunk-max-minutes", type=int, default=240, help="每个 shard 最大跨度分钟数。")
-    parser.add_argument("--hard-gap-minutes", type=int, default=90, help="相邻消息超过该分钟数时强制切 shard。")
-    parser.add_argument("--soft-gap-minutes", type=int, default=18, help="用于主题切片的软时间间隔。")
-    parser.add_argument("--topic-sim-threshold", type=float, default=0.08, help="主题相似度阈值，越低越不容易拆分。")
-    parser.add_argument("--topic-min-chunk-messages", type=int, default=24, help="至少达到该消息数后才允许按主题拆分。")
-    parser.add_argument(
-        "--direct-token-threshold",
-        "--direct-day-token-threshold",
-        dest="direct_token_threshold",
-        type=int,
-        default=100000,
-        help="整个查询区间的有效对话估算 token 不超过该阈值时，整段直接交给模型分析；超过后才切片。",
-    )
-    parser.add_argument("--direct-max-bytes", type=int, default=DEFAULT_DIRECT_MAX_BYTES, help="整段 direct_range 的 shard 输入 JSON 超过该字节数时，直接改走分片；0 表示不按字节数限制，默认只按 token 阈值决定是否 direct。")
-    parser.add_argument("--allow-direct-retry", action="store_true", help="允许 direct_range 失败后自动回退到分片模式重试。默认关闭，避免掩盖真实错误。")
-    parser.add_argument("--direct-final-max-tokens", type=int, default=DEFAULT_DIRECT_FINAL_MAX_TOKENS, help="direct_range 单次最终报表调用的最大输出 token。")
-    parser.add_argument("--topic-first", action=argparse.BooleanOptionalAction, default=DEFAULT_TOPIC_FIRST, help="direct_range 时先用紧凑全量消息做主题聚类，再按主题分发 section 分析。")
-    parser.add_argument("--topic-first-max-topics", type=int, default=DEFAULT_TOPIC_FIRST_MAX_TOPICS, help="topic-first 第一阶段最多生成的主题数。")
-    parser.add_argument("--topic-section-max-tokens", type=int, default=DEFAULT_TOPIC_SECTION_MAX_TOKENS, help="topic-first 单个 topic section 调用的最大输出 token。")
+    parser.add_argument("--max-workers", type=int, default=DEFAULT_MAP_MAX_WORKERS, help="map 阶段并行请求数；适当提高可加快速度，但也会增加瞬时并发。")
+    parser.add_argument("--reduce-fan-in", type=int, default=DEFAULT_REDUCE_FAN_IN, help="每轮 reduce 合并的 shard/bundle 数；越大轮数越少，但单次上下文越长。")
+    parser.add_argument("--chunk-max-messages", type=int, default=DEFAULT_CHUNK_MAX_MESSAGES, help="每个 shard 允许的最大消息条数。")
+    parser.add_argument("--chunk-max-chars", type=int, default=DEFAULT_CHUNK_MAX_CHARS, help="每个 shard 允许的最大字符预算，用来控制 prompt 体积。")
+    parser.add_argument("--chunk-max-minutes", type=int, default=DEFAULT_CHUNK_MAX_MINUTES, help="每个 shard 允许覆盖的最大时间跨度，单位分钟。")
+    parser.add_argument("--hard-gap-minutes", type=int, default=DEFAULT_HARD_GAP_MINUTES, help="相邻消息超过该分钟数时强制切 shard。")
+    parser.add_argument("--soft-gap-minutes", type=int, default=DEFAULT_SOFT_GAP_MINUTES, help="主题连续性判断用的软间隔分钟数。")
+    parser.add_argument("--topic-sim-threshold", type=float, default=DEFAULT_TOPIC_SIM_THRESHOLD, help="主题相似度阈值，越低越不容易因话题切换而拆 shard。")
+    parser.add_argument("--topic-min-chunk-messages", type=int, default=DEFAULT_TOPIC_MIN_CHUNK_MESSAGES, help="至少达到该消息数后才允许按主题连续性进一步切 shard。")
     parser.add_argument("--allow-json-repair", action="store_true", help="允许 DeepSeek 返回损坏 JSON 时自动发起一次修复请求。默认关闭，避免掩盖模型输出问题。")
     parser.add_argument("--output-dir", default="", help="输出目录；不传则自动生成。")
     parser.add_argument("--dry-run", action="store_true", help="不调用 DeepSeek，只验证导出、切片、reduce 和 HTML 渲染。")
@@ -164,8 +164,6 @@ def main() -> None:
         soft_gap_minutes=args.soft_gap_minutes,
         low_similarity_threshold=args.topic_sim_threshold,
         min_chunk_messages=args.topic_min_chunk_messages,
-        direct_token_threshold=args.direct_token_threshold,
-        direct_max_bytes=args.direct_max_bytes,
     )
     stats = build_local_stats(messages)
 
@@ -182,16 +180,14 @@ def main() -> None:
             "llm_model": model,
             "llm_thinking_enabled": thinking_enabled,
             "llm_reasoning_effort": reasoning_effort,
+            "max_workers": max(1, args.max_workers),
+            "reduce_fan_in": max(2, args.reduce_fan_in),
             "start_time": args.start,
             "end_time": args.end,
             "message_count": len(messages),
             "first_message_time": messages[0].time if messages else "",
             "last_message_time": messages[-1].time if messages else "",
             "chunk_plan": chunk_plan,
-            "topic_first": bool(args.topic_first),
-            "topic_first_max_topics": args.topic_first_max_topics,
-            "topic_section_max_tokens": args.topic_section_max_tokens,
-            "direct_final_max_tokens": args.direct_final_max_tokens,
             "chunk_ids": [chunk.id for chunk in chunks],
             "chunk_ranges": [
                 {
@@ -226,17 +222,12 @@ def main() -> None:
         thinking_enabled=thinking_enabled,
         reasoning_effort=reasoning_effort,
     )
+    balance_before = None if args.dry_run else capture_balance_snapshot(client, "before")
 
     effective_max_workers = max(1, args.max_workers)
-    use_direct_final = bool(chunk_plan.get("range_direct") and len(chunks) == 1)
-    use_topic_first = bool(use_direct_final and args.topic_first and not args.dry_run)
     if client is not None:
-        reduce_call_count = 0 if use_direct_final else estimate_reduce_call_count(len(chunks), max(2, args.reduce_fan_in))
-        map_call_count = 0 if use_direct_final else len(chunks)
-        if use_topic_first:
-            final_label = "topic_plan_calls=1 topic_section_calls<=%d final_calls=0" % max(1, args.topic_first_max_topics)
-        else:
-            final_label = "direct_final_calls=1" if use_direct_final else "final_calls=1"
+        reduce_call_count = estimate_reduce_call_count(len(chunks), max(2, args.reduce_fan_in))
+        map_call_count = len(chunks)
         effort_label = f"effort={getattr(client, 'reasoning_effort', '')} " if getattr(client, "thinking_enabled", False) else ""
         print(
             "[LLMPlan] "
@@ -244,123 +235,38 @@ def main() -> None:
             f"thinking={'enabled' if getattr(client, 'thinking_enabled', False) else 'disabled'} "
             f"{effort_label}"
             f"mode={chunk_plan.get('mode')} "
-            f"map_calls={map_call_count} reduce_calls={reduce_call_count} {final_label} "
+            f"map_calls={map_call_count} reduce_calls={reduce_call_count} final_calls=1 "
             f"estimated_tokens={chunk_plan.get('estimated_tokens', 0)} "
-            f"direct_threshold={chunk_plan.get('direct_token_threshold', 0)}",
+            f"fan_in={max(2, args.reduce_fan_in)}",
             flush=True,
         )
 
-    try:
-        # 先选择 direct/topic-first 分支，再回退到标准 map-reduce 流程。
-        if use_topic_first:
-            final_report = run_topic_first_report(
-                chat_name=ctx["display_name"],
-                start_time=args.start,
-                end_time=args.end,
-                stats=stats,
-                chunk=chunks[0],
-                output_dir=output_dir,
-                dry_run=args.dry_run,
-                client=client,
-                max_workers=effective_max_workers,
-                max_topics=max(4, args.topic_first_max_topics),
-                section_max_tokens=max(1024, args.topic_section_max_tokens),
-            )
-        elif use_direct_final:
-            final_report = run_direct_final_stage(
-                chat_name=ctx["display_name"],
-                start_time=args.start,
-                end_time=args.end,
-                stats=stats,
-                chunk=chunks[0],
-                output_dir=output_dir,
-                dry_run=args.dry_run,
-                client=client,
-                max_tokens=max(4096, args.direct_final_max_tokens),
-            )
-        else:
-            # 标准流程按 map -> reduce -> final 逐级汇总。
-            map_results = run_map_stage(
-                chunks,
-                output_dir=output_dir,
-                dry_run=args.dry_run,
-                client=client,
-                max_workers=effective_max_workers,
-            )
-            reduced_bundles = run_reduce_stage(
-                map_results,
-                output_dir=output_dir,
-                dry_run=args.dry_run,
-                client=client,
-                fan_in=max(2, args.reduce_fan_in),
-            )
-            final_report = run_final_stage(
-                chat_name=ctx["display_name"],
-                start_time=args.start,
-                end_time=args.end,
-                stats=stats,
-                bundles=reduced_bundles,
-                output_dir=output_dir,
-                dry_run=args.dry_run,
-                client=client,
-            )
-    except Exception as exc:
-        if not (chunk_plan.get("range_direct") and not args.dry_run and len(chunks) == 1):
-            raise
-        if not args.allow_direct_retry:
-            raise SystemExit(
-                "direct_range 单次请求失败，已按默认快速失败停止。"
-                "如需自动回退到分片模式，请显式传 --allow-direct-retry。"
-            ) from exc
-        print(f"[DirectRangeRetry] direct_range 单次请求失败，准备改用分片重试：{exc}", flush=True)
-        # direct-range 失败时重新切分，再走一次完整的分片流程。
-        chunks, chunk_plan = build_sharded_range_chunks(
-            messages,
-            max_messages=args.chunk_max_messages,
-            max_chars=args.chunk_max_chars,
-            max_minutes=args.chunk_max_minutes,
-            hard_gap_minutes=args.hard_gap_minutes,
-            soft_gap_minutes=args.soft_gap_minutes,
-            low_similarity_threshold=args.topic_sim_threshold,
-            min_chunk_messages=args.topic_min_chunk_messages,
-            direct_token_threshold=args.direct_token_threshold,
-            direct_max_bytes=args.direct_max_bytes,
-            fallback_reason=str(exc),
-        )
-        reduce_call_count = estimate_reduce_call_count(len(chunks), max(2, args.reduce_fan_in))
-        print(
-            "[DirectRangeRetry] "
-            f"sharded_range 将执行 map_calls={len(chunks)} "
-            f"reduce_calls={reduce_call_count} final_calls=1；"
-            "后续出现多次 LLM 请求属于回退分片流程。",
-            flush=True,
-        )
-        run_signature = build_run_signature()
-        write_snapshot_files()
-        map_results = run_map_stage(
-            chunks,
-            output_dir=output_dir,
-            dry_run=args.dry_run,
-            client=client,
-            max_workers=effective_max_workers,
-        )
-        reduced_bundles = run_reduce_stage(
-            map_results,
-            output_dir=output_dir,
-            dry_run=args.dry_run,
-            client=client,
-            fan_in=max(2, args.reduce_fan_in),
-        )
-        final_report = run_final_stage(
-            chat_name=ctx["display_name"],
-            start_time=args.start,
-            end_time=args.end,
-            stats=stats,
-            bundles=reduced_bundles,
-            output_dir=output_dir,
-            dry_run=args.dry_run,
-            client=client,
-        )
+    # 固定流程按 map -> reduce -> final 逐级汇总。
+    map_results = run_map_stage(
+        chunks,
+        output_dir=output_dir,
+        dry_run=args.dry_run,
+        client=client,
+        max_workers=effective_max_workers,
+    )
+    reduced_bundles = run_reduce_stage(
+        map_results,
+        output_dir=output_dir,
+        dry_run=args.dry_run,
+        client=client,
+        fan_in=max(2, args.reduce_fan_in),
+    )
+    final_report = run_final_stage(
+        chat_name=ctx["display_name"],
+        start_time=args.start,
+        end_time=args.end,
+        stats=stats,
+        bundles=reduced_bundles,
+        output_dir=output_dir,
+        dry_run=args.dry_run,
+        client=client,
+    )
+    balance_after = None if args.dry_run else capture_balance_snapshot(client, "after")
 
     payload = build_report_payload(
         ctx=ctx,
@@ -435,11 +341,13 @@ def main() -> None:
         "分析策略: "
         f"{chunk_plan.get('strategy', 'unknown')} | "
         f"模式 {chunk_plan.get('mode', 'unknown')} | "
-        f"估算 tokens {chunk_plan.get('estimated_tokens', 0)} | "
-        f"阈值 {chunk_plan.get('direct_token_threshold', 0)}"
+        f"估算 tokens {chunk_plan.get('estimated_tokens', 0)}"
     )
     print(f"模型: {provider} / {model}")
     print(f"map 并发: {effective_max_workers}")
+    print(f"reduce fan-in: {max(2, args.reduce_fan_in)}")
+    if balance_before and balance_after:
+        print(f"余额变化: {format_balance_delta(balance_before, balance_after)}")
     print(f"输出目录: {output_dir}")
     print(f"JSON: {output_dir / 'group_insight_report.json'}")
     print(f"HTML: {html_output_path}")

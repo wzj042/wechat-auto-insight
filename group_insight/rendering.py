@@ -453,8 +453,6 @@ def build_report_payload(
             "chunk_strategy": chunk_plan.get("strategy", ""),
             "chunk_mode": chunk_plan.get("mode", ""),
             "estimated_tokens": chunk_plan.get("estimated_tokens", 0),
-            "direct_token_threshold": chunk_plan.get("direct_token_threshold", 0),
-            "range_direct": chunk_plan.get("range_direct", False),
             "dry_run": dry_run,
             "provider": provider,
             "model": model,
@@ -483,7 +481,7 @@ def invalidate_cached_outputs_if_needed(
         return
 
     # 输入签名变化意味着阶段产物不再可信，统一清理后让本次运行重新生成。
-    for dirname in ["map", "reduce", "final", "topic_first"]:
+    for dirname in ["map", "reduce", "final"]:
         target_dir = output_dir / dirname
         if target_dir.exists():
             shutil.rmtree(target_dir)

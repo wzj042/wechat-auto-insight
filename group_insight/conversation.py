@@ -681,83 +681,9 @@ def estimate_message_tokens(message: StructuredMessage) -> int:
     return base + sender_cost + 8
 
 
-def estimate_deepseek_cost_usd(
-    input_tokens: int,
-    output_tokens: int,
-    *,
-    cache_hit: bool = False,
-) -> float:
-    """按 DeepSeek 价格参数估算一次请求成本。"""
-    input_rate = (
-        DEEPSEEK_INPUT_CACHE_HIT_USD_PER_M_TOKEN
-        if cache_hit
-        else DEEPSEEK_INPUT_CACHE_MISS_USD_PER_M_TOKEN
-    )
-    return (
-        (input_tokens * input_rate)
-        + (output_tokens * DEEPSEEK_OUTPUT_USD_PER_M_TOKEN)
-    ) / 1_000_000
-
-
-def estimate_deepseek_usage_cost_usd(usage: dict[str, Any]) -> float:
-    """根据接口 usage 字段估算 DeepSeek 实际计费成本。"""
-    hit_tokens = int(usage.get("prompt_cache_hit_tokens") or 0)
-    miss_tokens = int(usage.get("prompt_cache_miss_tokens") or 0)
-    prompt_tokens = int(usage.get("prompt_tokens") or 0)
-    completion_tokens = int(usage.get("completion_tokens") or 0)
-    if not hit_tokens and not miss_tokens:
-        miss_tokens = prompt_tokens
-    return (
-        (hit_tokens * DEEPSEEK_INPUT_CACHE_HIT_USD_PER_M_TOKEN)
-        + (miss_tokens * DEEPSEEK_INPUT_CACHE_MISS_USD_PER_M_TOKEN)
-        + (completion_tokens * DEEPSEEK_OUTPUT_USD_PER_M_TOKEN)
-    ) / 1_000_000
-
-
-def format_usd(value: float) -> str:
-    """把美元成本格式化为固定精度字符串。"""
-    if value < 0.0001:
-        return f"${value:.6f}"
-    if value < 0.01:
-        return f"${value:.5f}"
-    return f"${value:.4f}"
-
-
 def estimate_prompt_tokens(system_prompt: str, user_prompt: str) -> int:
     """估算 system 与 user prompt 的总 token。"""
     return estimate_text_tokens(system_prompt) + estimate_text_tokens(user_prompt)
-
-
-def direct_final_max_tokens_for_client(
-    client: Any | None,
-    system_prompt: str,
-    user_prompt: str,
-    requested_max_tokens: int,
-) -> int:
-    """根据客户端上下文窗口动态收缩 direct-final 输出预算。"""
-    if client is None or client.provider != "deepseek":
-        return requested_max_tokens
-    prompt_tokens = estimate_prompt_tokens(system_prompt, user_prompt)
-    available = DEEPSEEK_CONTEXT_WINDOW_TOKENS - prompt_tokens - 1024
-    if available < DEFAULT_DIRECT_FINAL_MIN_TOKENS:
-        return requested_max_tokens
-    return max(DEFAULT_DIRECT_FINAL_MIN_TOKENS, min(requested_max_tokens, available))
-
-
-def parse_context_length_error(value: str) -> tuple[int, int, int, int] | None:
-    """从模型上下文长度错误文本中提取限制和请求 token。"""
-    match = re.search(
-        r"maximum context length is (\d+) tokens\. However, you requested (\d+) tokens \((\d+) in the messages, (\d+) in the completion\)",
-        value,
-    )
-    if not match:
-        return None
-    return (
-        int(match.group(1)),
-        int(match.group(2)),
-        int(match.group(3)),
-        int(match.group(4)),
-    )
 
 
 def log_llm_request_estimate(
@@ -777,18 +703,6 @@ def log_llm_request_estimate(
         f"{('/' + model) if model else ''} "
         f"input~{input_tokens} tokens, {output_budget}"
     )
-    if provider == "deepseek":
-        if max_tokens is not None:
-            miss_cost = estimate_deepseek_cost_usd(input_tokens, max_tokens, cache_hit=False)
-            hit_cost = estimate_deepseek_cost_usd(input_tokens, max_tokens, cache_hit=True)
-            message += (
-                f", DeepSeek cost~{format_usd(miss_cost)}"
-                f" (cache hit~{format_usd(hit_cost)})"
-            )
-        else:
-            message += ", DeepSeek cost estimate unavailable without explicit output budget"
-    else:
-        message += ", cost estimate unavailable for this provider"
     print(message, flush=True)
 
 
@@ -1178,88 +1092,15 @@ def build_analysis_chunks(
     soft_gap_minutes: int,
     low_similarity_threshold: float,
     min_chunk_messages: int,
-    direct_token_threshold: int,
-    direct_max_bytes: int,
 ) -> tuple[list[MessageChunk], dict[str, Any]]:
-    """根据 token/字节预算选择 direct_range 或分片分析计划。"""
+    """按固定 map-reduce 策略构造消息分片与分析计划。"""
     analysis_messages = [message for message in messages if is_analysis_message(message)]
     if not analysis_messages:
         return [], {
-            "strategy": "range-first",
-            "direct_token_threshold": direct_token_threshold,
-            "direct_max_bytes": direct_max_bytes,
+            "strategy": "map-reduce",
             "analysis_message_count": 0,
             "estimated_tokens": 0,
-            "estimated_direct_payload_bytes": 0,
             "mode": "empty",
-            "range_direct": False,
-            "shard_count": 0,
-        }
-
-    estimated_tokens = sum(estimate_message_tokens(message) for message in analysis_messages)
-    direct_chunk = build_chunk(1, analysis_messages)
-    direct_payload_bytes = estimate_chunk_payload_bytes(direct_chunk)
-    byte_limit_allows_direct = direct_max_bytes <= 0 or direct_payload_bytes <= direct_max_bytes
-    # 小时间窗优先 direct_range，避免 map/reduce 把同一话题过度切碎。
-    if estimated_tokens <= direct_token_threshold and byte_limit_allows_direct:
-        chunk = direct_chunk
-        return [chunk], {
-            "strategy": "range-first",
-            "direct_token_threshold": direct_token_threshold,
-            "direct_max_bytes": direct_max_bytes,
-            "analysis_message_count": len(analysis_messages),
-            "estimated_tokens": estimated_tokens,
-            "estimated_direct_payload_bytes": direct_payload_bytes,
-            "mode": "direct_range",
-            "range_direct": True,
-            "shard_count": 1,
-            "range": {
-                "start": analysis_messages[0].time,
-                "end": analysis_messages[-1].time,
-            },
-        }
-
-    return build_sharded_range_chunks(
-        messages,
-        max_messages=max_messages,
-        max_chars=max_chars,
-        max_minutes=max_minutes,
-        hard_gap_minutes=hard_gap_minutes,
-        soft_gap_minutes=soft_gap_minutes,
-        low_similarity_threshold=low_similarity_threshold,
-        min_chunk_messages=min_chunk_messages,
-        direct_token_threshold=direct_token_threshold,
-        direct_max_bytes=direct_max_bytes,
-        estimated_direct_payload_bytes=direct_payload_bytes,
-    )
-
-
-def build_sharded_range_chunks(
-    messages: list[StructuredMessage],
-    max_messages: int,
-    max_chars: int,
-    max_minutes: int,
-    hard_gap_minutes: int,
-    soft_gap_minutes: int,
-    low_similarity_threshold: float,
-    min_chunk_messages: int,
-    direct_token_threshold: int,
-    direct_max_bytes: int,
-    fallback_reason: str = "",
-    estimated_direct_payload_bytes: int = 0,
-) -> tuple[list[MessageChunk], dict[str, Any]]:
-    """强制按分片模式构造消息块和分析计划。"""
-    analysis_messages = [message for message in messages if is_analysis_message(message)]
-    if not analysis_messages:
-        return [], {
-            "strategy": "range-first",
-            "direct_token_threshold": direct_token_threshold,
-            "direct_max_bytes": direct_max_bytes,
-            "analysis_message_count": 0,
-            "estimated_tokens": 0,
-            "estimated_direct_payload_bytes": 0,
-            "mode": "empty",
-            "range_direct": False,
             "shard_count": 0,
         }
 
@@ -1278,26 +1119,17 @@ def build_sharded_range_chunks(
         chunk.id = f"shard-{index:03d}"
         chunk.index = index
 
-    plan = {
-        "strategy": "range-first",
-        "direct_token_threshold": direct_token_threshold,
-        "direct_max_bytes": direct_max_bytes,
+    return chunks, {
+        "strategy": "map-reduce",
         "analysis_message_count": len(analysis_messages),
         "estimated_tokens": estimated_tokens,
-        "estimated_direct_payload_bytes": estimated_direct_payload_bytes,
-        "mode": "sharded_range",
-        "range_direct": False,
+        "mode": "map_reduce",
         "shard_count": len(chunks),
         "range": {
             "start": analysis_messages[0].time,
             "end": analysis_messages[-1].time,
         },
     }
-    if fallback_reason:
-        # direct_range 失败后的回退会记录原因，方便排查后续为何出现多次 LLM 调用。
-        plan["fallback_reason"] = fallback_reason
-        plan["fallback_from_direct_range"] = True
-    return chunks, plan
 
 
 def estimate_reduce_call_count(item_count: int, fan_in: int) -> int:
