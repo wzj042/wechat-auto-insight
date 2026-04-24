@@ -8,6 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from .alerts import maybe_send_alert
 from .chunking import build_analysis_chunks, chunk_payload, estimate_reduce_call_count
 from .common import ensure_dir, normalize_text, slugify, write_json
 from .conversation import serialize_messages
@@ -374,7 +375,20 @@ def main() -> None:
                     )
                     send_results.append((send_target, "sent", ""))
                 except Exception as exc:
-                    send_results.append((send_target, "failed", str(exc)))
+                    detail = str(exc)
+                    send_results.append((send_target, "failed", detail))
+                    maybe_send_alert(
+                        subject=f"[group_insight] 微信发送失败: {send_target}",
+                        body=(
+                            f"群聊：{ctx['display_name']}\n"
+                            f"区间：{args.start} -> {args.end}\n"
+                            f"发送目标：{send_target}\n"
+                            f"异常类型：{type(exc).__name__}\n"
+                            f"异常详情：{detail}\n"
+                            f"输出目录：{output_dir}\n"
+                            f"请检查 PC 微信是否运行、窗口是否被最小化或锁屏。"
+                        ),
+                    )
 
     print("=" * 72)
     print("群洞察报表生成完成")

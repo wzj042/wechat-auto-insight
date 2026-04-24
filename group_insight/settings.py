@@ -179,3 +179,12 @@ def load_local_env() -> None:
 
 
 load_local_env()
+
+# 异常告警邮件配置（可选；留空时静默跳过告警）。
+# 必须放在 load_local_env() 之后，否则 .env 中的变量来不及进入 os.environ。
+ALERT_SMTP_HOST = os.environ.get("ALERT_SMTP_HOST", "")
+ALERT_SMTP_PORT = int(os.environ.get("ALERT_SMTP_PORT", "465") or "465")
+ALERT_SMTP_USER = os.environ.get("ALERT_SMTP_USER", "")
+ALERT_SMTP_PASSWORD = os.environ.get("ALERT_SMTP_PASSWORD", "")
+ALERT_FROM = os.environ.get("ALERT_FROM", "")
+ALERT_TO = os.environ.get("ALERT_TO", "")

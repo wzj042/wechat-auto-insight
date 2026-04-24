@@ -161,8 +161,12 @@ def send_report_png_to_chat(
     image_path: Path,
     message_lines: list[str] | None = None,
     friend_name: str = "文件传输助手",
+    max_retries: int = 3,
+    retry_delay: float = 3.0,
 ) -> None:
-    """通过 `pyweixin` 将 PNG 发送到指定会话。"""
+    """通过 `pyweixin` 将 PNG 发送到指定会话，失败时自动重试。"""
+
+    import time
 
     pywechat_path = ROOT_DIR / "pywechat"
     if str(pywechat_path) not in sys.path:
@@ -178,15 +182,33 @@ def send_report_png_to_chat(
 
     normalized_messages = [normalize_text(line) for line in (message_lines or [])]
     normalized_messages = [line for line in normalized_messages if line]
-    Files.send_files_to_friend(
-        friend=friend_name,
-        files=[str(image_path.resolve())],
-        with_messages=bool(normalized_messages),
-        messages=normalized_messages,
-        messages_first=True,
-        is_maximize=False,
-        close_weixin=False,
-    )
+
+    last_error: Exception | None = None
+    for attempt in range(1, max_retries + 1):
+        try:
+            Files.send_files_to_friend(
+                friend=friend_name,
+                files=[str(image_path.resolve())],
+                with_messages=bool(normalized_messages),
+                messages=normalized_messages,
+                messages_first=True,
+                is_maximize=False,
+                close_weixin=False,
+            )
+            return
+        except Exception as exc:
+            last_error = exc
+            if attempt >= max_retries:
+                break
+            backoff = retry_delay * (2 ** (attempt - 1))
+            print(
+                f"[SendRetry] 第 {attempt} 次发送到 '{friend_name}' 失败: {exc}，"
+                f"{backoff:.1f}s 后重试（指数退避）...",
+                flush=True,
+            )
+            time.sleep(backoff)
+
+    raise RuntimeError(f"发送到 '{friend_name}' 失败（已重试 {max_retries} 次）: {last_error}") from last_error
 
 
 def has_cli_option(*names: str) -> bool:
