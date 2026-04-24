@@ -6,7 +6,13 @@
 
 - `wechat-decrypt/`：微信 4.x 数据库密钥提取、SQLCipher 数据库解密、MCP 查询能力。
 - `pywechat/`：Windows 10/11 下的 PC 微信 UI 自动化能力；其中 `pyweixin/` 适配微信 4.1+，`pywechat/` 主要适配微信 3.9.x。
-- `group_insight/`：基于已解密消息生成群聊洞察日报，并可导出 HTML/PNG、通过 UI 自动化发送。
+- `group_insight/`：基于已解密消息生成群聊洞察日报，并可导出 HTML/PNG、通过 UI 自动化发送，默认走 DeepSeek 分析链路。
+
+当前文档口径按收口后的运行原则维护：
+
+- `group_insight` 只把仓库根目录 `.env` 视为受支持的本地配置入口。
+- 发送、调度和分析流程以显式参数为准，不再在总览文档里展开旧兼容参数。
+- 缺少关键输入、依赖或运行条件时优先直接失败，避免静默兜底掩盖问题。
 
 ## 仓库定位
 
@@ -89,6 +95,6 @@ uv pip install -r requirements.txt
 - `group_insight/`：日报分析、渲染、发送与调度代码。
 - `wechat-decrypt/`：数据库密钥提取、解密、MCP 查询。
 - `pywechat/`：Windows 微信 UI 自动化。
-- `.env.example`：环境变量模板。
+- `.env.example`：`group_insight` 的 DeepSeek 环境变量模板。
 - `requirements.txt`：根目录 Python 依赖。
 - `reports/`：本地生成物目录。

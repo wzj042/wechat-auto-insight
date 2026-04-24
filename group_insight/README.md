@@ -12,27 +12,39 @@
 Copy-Item .env.example .env
 ```
 
-至少填写一个模型提供方的 Key：
+至少填写 DeepSeek 的 Key：
 
 ```dotenv
-GROUP_INSIGHT_PROVIDER=deepseek
 DEEPSEEK_API_KEY=sk-your-deepseek-api-key
-DEEPSEEK_MODEL=deepseek-chat
+DEEPSEEK_MODEL=deepseek-v4-flash
+THINKING=false
+THINKING_LEVEL=high
 DEEPSEEK_API_URL=https://api.deepseek.com/chat/completions
-
-ZHIPUAI_API_KEY=your-zhipu-api-key
-ZHIPUAI_MODEL=glm-4.5-flash
 ```
 
-`.env` 是本机私有文件，不要提交。程序启动时会优先读取仓库根目录 `.env`，再兼容当前工作目录和父目录；已经存在于系统环境变量里的同名 Key 不会被覆盖。
+`.env` 是本机私有文件，不要提交。当前文档口径只支持仓库根目录 `.env` 作为本地配置入口；已经存在于系统环境变量里的同名 Key 不会被覆盖。
 
 验证 `.env` 是否能被日报脚本读到：
 
 ```powershell
-.\.venv\Scripts\python.exe -c "import os; import group_insight.settings; print(bool(os.environ.get('DEEPSEEK_API_KEY') or os.environ.get('ZHIPUAI_API_KEY')))"
+.\.venv\Scripts\python.exe -c "import os; import group_insight.settings; print(bool(os.environ.get('DEEPSEEK_API_KEY')))"
 ```
 
-输出 `True` 表示至少一个模型 Key 已进入当前进程环境。
+输出 `True` 表示 DeepSeek Key 已进入当前进程环境。
+
+其中：
+
+- `THINKING=false` 表示默认走非思考模式。
+- `THINKING_LEVEL` 仅在 `THINKING=true` 时生效，当前支持 `high` / `max`。
+
+## 运行原则
+
+当前推荐用法强调显式配置和 fail-fast：
+
+- 群聊、时间窗、API Key、发送目标等关键输入缺失时，优先直接修正参数或仓库根目录 `.env`。
+- `direct_range` 自动回退和 LLM 返回 JSON 自动修复按显式开关理解，默认关闭；需要时分别显式传 `--allow-direct-retry`、`--allow-json-repair`。
+- DeepSeek 默认显式传 `max_tokens` 预算，避免 JSON 输出链路在思考模式或异常情况下失控扩张；如需改预算，优先从命令行参数或代码常量调整。
+- 文档只保留当前推荐参数，不再展开旧兼容入口。
 
 ## 微信数据库准备
 
@@ -143,12 +155,6 @@ print("RPA target opened:", target)
 .\.venv\Scripts\python.exe -m group_insight --send-after-run --send-target "文件传输助手" --send-target "有氧运动聊天"
 ```
 
-只发送到文件传输助手兼容参数：
-
-```powershell
-.\.venv\Scripts\python.exe -m group_insight --send-to-filehelper
-```
-
 ## 任务计划
 
 注册每日任务：
@@ -158,6 +164,8 @@ python -m group_insight.scheduler --time 23:50
 ```
 
 调度模块默认把任务动作注册为 `python -m group_insight`，并优先把 Python 可执行文件指向仓库 `.venv\Scripts\python.exe`。如果任务曾经用全局 Python 注册过，重新运行一次注册脚本即可更新。
+
+任务计划文档按模块入口收口，不再说明旧的脚本路径兼容入口；缺少模块名、Python 路径或交互式桌面条件时，优先直接修正配置并重新注册。
 
 先预览不写入任务计划：
 
