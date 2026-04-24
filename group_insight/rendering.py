@@ -5,7 +5,13 @@
 """
 from __future__ import annotations
 
-from .pipeline import *
+import html
+import re
+from datetime import datetime
+
+from .common import write_json
+from .fetching import get_group_nickname_map, is_resolved_member_display
+from .settings import MAX_REPORT_SECTIONS
 
 
 def render_html_report(

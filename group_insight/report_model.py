@@ -5,7 +5,13 @@ dry-run 无模型时无法生成报表。
 """
 from __future__ import annotations
 
-from .llm import *
+from collections import Counter
+from datetime import datetime
+from typing import Any
+
+from .common import extract_topic_tokens, make_user_placeholder, normalize_text, topic_similarity
+from .models import MessageChunk
+from .settings import MAX_REPORT_SECTIONS, SECTION_TOPIC_COVERAGE_THRESHOLD
 
 
 def parse_report_time(value: str) -> datetime | None:
@@ -83,8 +89,6 @@ def dedupe_sections(sections: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return deduped
 
 
-MAX_REPORT_SECTIONS = 15
-
 
 def select_timeline_sections(sections: list[dict[str, Any]], limit: int = MAX_REPORT_SECTIONS) -> list[dict[str, Any]]:
     """在 section 过多时按时间线均匀保留代表片段。"""
@@ -120,8 +124,6 @@ def build_report_sections_from_bundles(bundles: list[dict[str, Any]]) -> list[di
             )
     return select_timeline_sections(dedupe_sections(sections), limit=MAX_REPORT_SECTIONS)
 
-
-SECTION_TOPIC_COVERAGE_THRESHOLD = 0.18
 
 
 def section_topic_tokens(section: dict[str, Any]) -> set[str]:

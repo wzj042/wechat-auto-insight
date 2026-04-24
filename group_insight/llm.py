@@ -5,7 +5,24 @@ direct-final 和 topic-first 模式使用的结构化提示词。
 """
 from __future__ import annotations
 
-from .conversation import *
+import json
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from typing import Any
+
+from .chunking import chunk_payload, compact_direct_chunk_payload, compact_topic_index_payload, compact_topic_section_payload
+from .common import safe_json_loads, extract_json_object
+from .conversation import compact_prompt_stats
+from .settings import (
+    DEFAULT_API_URL,
+    DEFAULT_DEEPSEEK_MODEL,
+    DEFAULT_DEEPSEEK_REASONING_EFFORT,
+    DEFAULT_DEEPSEEK_THINKING,
+    DEFAULT_STRUCTURED_STAGE_MAX_TOKENS,
+    DEFAULT_STRUCTURED_STAGE_MAX_TOKENS_THINKING,
+)
 
 
 class LLMClientProtocol:

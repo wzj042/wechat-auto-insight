@@ -2,9 +2,21 @@
 
 from __future__ import annotations
 
+import math
+import re
+import shutil
+import sys
+from datetime import datetime, timedelta
+from pathlib import Path
 from subprocess import DEVNULL, CalledProcessError, run
 
-from .conversation import *
+from .common import normalize_text
+from .settings import (
+    DEFAULT_AUTO_TIME_CUTOFF,
+    DEFAULT_REPORT_IMAGE_TIMEOUT_MS,
+    DEFAULT_REPORT_IMAGE_WIDTH,
+    ROOT_DIR,
+)
 
 
 def find_local_browser_executable() -> str:
