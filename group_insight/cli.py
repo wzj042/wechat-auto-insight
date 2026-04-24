@@ -100,6 +100,22 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def resolve_send_delivery(args: argparse.Namespace) -> tuple[bool, list[str], str]:
+    """归一化发送开关、目标会话和附带文本。"""
+
+    send_requested = bool(args.send_after_run or args.send_to_filehelper)
+    send_targets = split_send_targets(args.send_target)
+    if not send_targets and args.send_after_run:
+        send_targets = split_send_targets(DEFAULT_SEND_TARGET_CHATS)
+    if args.send_to_filehelper:
+        filehelper_target = normalize_text(args.filehelper_name) or DEFAULT_FILEHELPER_NAME
+        for target in split_send_targets(filehelper_target):
+            if target not in send_targets:
+                send_targets.append(target)
+    send_text = normalize_text(args.send_message) or normalize_text(args.filehelper_message)
+    return send_requested, send_targets, send_text
+
+
 def main() -> None:
     """执行日报报表的完整生成、渲染与可选发送流程。"""
 
@@ -250,7 +266,6 @@ def main() -> None:
                     client=client,
                     max_tokens=max(4096, args.direct_final_max_tokens),
                 )
-            reduced_bundles = []
         elif use_direct_final:
             final_report = run_direct_final_stage(
                 chat_name=ctx["display_name"],
@@ -263,7 +278,6 @@ def main() -> None:
                 client=client,
                 max_tokens=max(4096, args.direct_final_max_tokens),
             )
-            reduced_bundles = []
         else:
             # 标准流程按 map -> reduce -> final 逐级汇总。
             map_results = run_map_stage(
@@ -374,14 +388,7 @@ def main() -> None:
     html_output_path.write_text(html_text, encoding="utf-8")
     image_output_path = output_dir / "group_insight_report.png"
     image_error = ""
-    send_requested = bool(args.send_after_run or args.send_to_filehelper)
-    send_targets = split_send_targets(args.send_target) or split_send_targets(DEFAULT_SEND_TARGET_CHATS)
-    if args.send_to_filehelper:
-        filehelper_target = normalize_text(args.filehelper_name) or DEFAULT_FILEHELPER_NAME
-        for target in split_send_targets(filehelper_target):
-            if target not in send_targets:
-                send_targets.append(target)
-    send_text = normalize_text(args.send_message) or normalize_text(args.filehelper_message)
+    send_requested, send_targets, send_text = resolve_send_delivery(args)
     send_results: list[tuple[str, str, str]] = []
     if not args.no_image:
         image_error = export_report_image(

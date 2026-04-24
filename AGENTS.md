@@ -4,7 +4,7 @@
 
 - 当前目录是本地“微信能力”父工作区，根目录现在按父 Git 仓库管理。
 - `wechat-decrypt/` 和 `pywechat/` 是独立上游仓库，在父仓库里作为依赖模块登记，不把它们的源码直接并入根目录历史。
-- 根目录只维护本地编排脚本、运行说明、任务计划脚本、LLM 辅助工具和生成物边界。
+- 群洞察主入口与任务计划逻辑位于 `group_insight/` 包内。
 - 这个工作区同时包含两类能力：
   - 数据库侧：微信 4.x 本地数据库密钥提取、SQLCipher 数据库解密、MCP 查询、Web 消息监控。
   - UI 自动化侧：Windows PC 微信发消息、读聊天窗口、联系人/群操作等自动化。
@@ -42,12 +42,12 @@
 - `AGENTS.md`
   - 当前工作区给编码代理看的维护说明，记录目录边界、Git 结构、运行前提和修改注意事项。
 - `README`
-  - Windows 任务计划的本地运维速查，包含查看、运行、禁用、启用、删除和重新注册任务的命令。
-- `group_insight_report.py`
-  - 兼容入口脚本。
-  - 保持 `python group_insight_report.py ...` 的原有调用方式，实际逻辑委托给 `group_insight.cli`。
+  - 父工作区总览，介绍仓库结构、两个 Git 子模块与群聊日报模块的边界。
 - `group_insight/`
   - 群聊洞察报表的领域化模块包。
+  - `README.md`：群聊日报模块的运行说明、定时任务与发送说明。
+  - `__main__.py`：`python -m group_insight` 模块入口。
+  - `runtime.py`：工作区 `.venv` 重定向等运行时辅助逻辑。
   - `settings.py`：默认配置、路径、环境变量读取、正则和微信 MCP 懒加载入口。
   - `models.py`：`StructuredMessage`、`MessageChunk` 等领域数据模型。
   - `conversation.py`：消息清洗、富消息解析、发言人归一、消息分类、统计、分块、payload 压缩和微信数据源适配。
@@ -57,9 +57,7 @@
   - `rendering.py`：HTML 报表渲染、最终 payload 打包和缓存失效。
   - `transport.py`：HTML 转 PNG、浏览器导出、微信图片发送、自动时间窗和发送目标解析。
   - `cli.py`：命令行参数、运行时 LLM 配置和主流程装配。
-- `schedule_group_insight_report.py`
-  - Windows 任务计划注册脚本。
-  - 默认每天运行 `group_insight_report.py`，支持 `--time`、`--task-name`、`--python`、`--script`、`--args`、`--highest`、`--dry-run`。
+  - `scheduler.py`：Windows 任务计划注册模块，默认把任务动作指向 `python -m group_insight`。
 - `zhipuai_tool.py`
   - 智谱 AI SDK 的轻量封装，提供文本对话、图像理解和 `create_zhipu_client` 便捷函数。
 - `test_zhipuai_features.py`
@@ -71,7 +69,7 @@
 - `.env`
   - 本机私有环境变量，可能包含 `DEEPSEEK_API_KEY`、`ZHIPUAI_API_KEY` 等密钥，不得提交。
 - `reports/`
-  - `group_insight_report.py` 的生成物目录，通常包含快照、阶段缓存、JSON、HTML、PNG，不作为源码维护。
+  - `group_insight` 报表流程的生成物目录，通常包含快照、阶段缓存、JSON、HTML、PNG，不作为源码维护。
 - `.claude/`、`.history/`、`.ruff_cache/`、`.vscode/`、`__pycache__/`
   - 本地工具、编辑器和 Python 缓存状态，不作为源码维护。
 
@@ -110,8 +108,7 @@
 
 ## 本地定制痕迹
 
-- 根目录脚本存在明显本地运营脚本特征，不是完整参数化的通用 CLI。
-- 当前 `group_insight_report.py` 默认分析群聊为 `有氧运动聊天`，默认 provider 为 `deepseek`，默认输出到 `reports/group_insight/`。
+- 当前 `group_insight` 主入口默认分析群聊为 `有氧运动聊天`，默认 provider 为 `deepseek`，默认输出到 `reports/group_insight/`。
 - 历史说明里曾出现过其他群名、群聊 ID、`room_id` 等硬编码业务参数；改逻辑前要以当前脚本源码为准。
 - 部分脚本会通过 `sys.path.insert(...)` 把根目录、`wechat-decrypt/` 或 `pywechat/` 加入导入路径。继续新增脚本时，不要扩散更多硬编码绝对路径。
 - 如果后续要长期维护或复用，优先做下面两件事：
@@ -122,9 +119,9 @@
 
 - 除非任务明确要求，优先修改根目录本地脚本，不要随意大改 `pywechat/` 和 `wechat-decrypt/` 里的上游代码。
 - 子模块内如果有必要修改，先确认该改动是本地补丁、fork 补丁，还是要提交给上游；不要把子模块源码复制到父仓库绕开 Git 边界。
-- 根目录报表能力已经按领域拆到 `group_insight/`。改动时优先落在对应领域模块，不要重新把逻辑堆回 `group_insight_report.py`。
+- 群聊日报能力已经按领域拆到 `group_insight/`。改动时优先落在对应领域模块，不要重新在根目录恢复兼容包装脚本。
 - 报表主流程同时触碰数据库读取、LLM 调用、HTML/PNG 渲染和 UI 自动发送，改动时优先用小范围 dry-run 或 `--no-image`、`--no-send-after-run` 验证。
-- `schedule_group_insight_report.py` 会写 Windows 任务计划；调试时优先使用 `--dry-run`。
+- `group_insight.scheduler` 会写 Windows 任务计划；调试时优先使用 `python -m group_insight.scheduler --dry-run`。
 - 根目录某些统计或实验脚本可能并不都基于真实消息解密结果。改逻辑前先读脚本本身，不要假设它们全部是准确生产实现。
 
 ## 读取代码时的注意点
