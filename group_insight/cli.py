@@ -49,6 +49,7 @@ from .transport import (
     export_report_image,
     has_cli_option,
     send_report_png_to_chat,
+    send_report_png_to_chats,
     split_send_targets,
 )
 
@@ -160,6 +161,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--send-after-run", action=argparse.BooleanOptionalAction, default=DEFAULT_SEND_AFTER_RUN, help="执行完成后发送 PNG 到指定会话。默认读取脚本顶部 DEFAULT_SEND_AFTER_RUN。")
     parser.add_argument("--send-target", action="append", default=None, help="发送目标会话名称；可重复传入，也可用逗号/分号分隔。未传时读取脚本顶部 DEFAULT_SEND_TARGET_CHATS。")
     parser.add_argument("--send-message", default=DEFAULT_SEND_MESSAGE, help="发送 PNG 时附带的文本说明；不传则使用默认摘要。未传时读取脚本顶部 DEFAULT_SEND_MESSAGE。")
+    parser.add_argument("--send-interval", type=float, default=1.5, help="多目标发送时，相邻会话之间的间隔秒数，默认 1.5。")
+    parser.add_argument("--send-delay", type=float, default=0.5, help="单个目标内每次操作（点击/输入）之间的延迟秒数，默认 0.5。")
     return parser.parse_args()
 
 
@@ -366,12 +369,14 @@ def main() -> None:
                     f"生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
                 ]
             )
-            for send_target in send_targets:
+            if len(send_targets) == 1:
+                send_target = send_targets[0]
                 try:
                     send_report_png_to_chat(
                         image_output_path,
                         message_lines=[send_text] if send_text else [default_send_message],
                         friend_name=send_target,
+                        send_delay=args.send_delay,
                     )
                     send_results.append((send_target, "sent", ""))
                 except Exception as exc:
@@ -389,6 +394,28 @@ def main() -> None:
                             f"请检查 PC 微信是否运行、窗口是否被最小化或锁屏。"
                         ),
                     )
+            else:
+                multi_results = send_report_png_to_chats(
+                    image_output_path,
+                    message_lines=[send_text] if send_text else [default_send_message],
+                    friend_names=send_targets,
+                    send_delay=args.send_delay,
+                    send_interval=args.send_interval,
+                )
+                for friend_name, status, detail in multi_results:
+                    send_results.append((friend_name, status, detail))
+                    if status == "failed":
+                        maybe_send_alert(
+                            subject=f"[group_insight] 微信发送失败: {friend_name}",
+                            body=(
+                                f"群聊：{ctx['display_name']}\n"
+                                f"区间：{args.start} -> {args.end}\n"
+                                f"发送目标：{friend_name}\n"
+                                f"异常详情：{detail}\n"
+                                f"输出目录：{output_dir}\n"
+                                f"请检查 PC 微信是否运行、窗口是否被最小化或锁屏。"
+                            ),
+                        )
 
     print("=" * 72)
     print("群洞察报表生成完成")

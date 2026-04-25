@@ -9,6 +9,7 @@ import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 from subprocess import DEVNULL, CalledProcessError, run
+from typing import Any
 
 from .common import normalize_text
 from .settings import (
@@ -163,6 +164,7 @@ def send_report_png_to_chat(
     friend_name: str = "文件传输助手",
     max_retries: int = 3,
     retry_delay: float = 3.0,
+    send_delay: float | None = None,
 ) -> None:
     """通过 `pyweixin` 将 PNG 发送到指定会话，失败时自动重试。"""
 
@@ -183,18 +185,22 @@ def send_report_png_to_chat(
     normalized_messages = [normalize_text(line) for line in (message_lines or [])]
     normalized_messages = [line for line in normalized_messages if line]
 
+    kwargs: dict[str, Any] = {
+        "friend": friend_name,
+        "files": [str(image_path.resolve())],
+        "with_messages": bool(normalized_messages),
+        "messages": normalized_messages,
+        "messages_first": True,
+        "is_maximize": False,
+        "close_weixin": False,
+    }
+    if send_delay is not None:
+        kwargs["send_delay"] = send_delay
+
     last_error: Exception | None = None
     for attempt in range(1, max_retries + 1):
         try:
-            Files.send_files_to_friend(
-                friend=friend_name,
-                files=[str(image_path.resolve())],
-                with_messages=bool(normalized_messages),
-                messages=normalized_messages,
-                messages_first=True,
-                is_maximize=False,
-                close_weixin=False,
-            )
+            Files.send_files_to_friend(**kwargs)
             return
         except Exception as exc:
             last_error = exc
@@ -209,6 +215,56 @@ def send_report_png_to_chat(
             time.sleep(backoff)
 
     raise RuntimeError(f"发送到 '{friend_name}' 失败（已重试 {max_retries} 次）: {last_error}") from last_error
+
+
+def send_report_png_to_chats(
+    image_path: Path,
+    message_lines: list[str] | None = None,
+    friend_names: list[str] | None = None,
+    max_retries: int = 3,
+    retry_delay: float = 3.0,
+    send_delay: float | None = None,
+    send_interval: float = 1.5,
+) -> list[tuple[str, str, str]]:
+    """将 PNG 报表依次发送到多个微信会话。
+
+    对每个目标循环调用 `send_report_png_to_chat`，目标之间固定间隔
+    `send_interval` 秒，避免操作过快导致微信风控或 UI 状态错乱。
+
+    返回每个目标的结果列表，格式为 ``(friend_name, status, detail)``，
+    其中 ``status`` 为 ``"sent"`` 或 ``"failed"``。
+    """
+
+    import time
+
+    targets = friend_names or []
+    if not targets:
+        return []
+
+    results: list[tuple[str, str, str]] = []
+    for idx, friend_name in enumerate(targets):
+        try:
+            send_report_png_to_chat(
+                image_path=image_path,
+                message_lines=message_lines,
+                friend_name=friend_name,
+                max_retries=max_retries,
+                retry_delay=retry_delay,
+                send_delay=send_delay,
+            )
+            results.append((friend_name, "sent", ""))
+        except Exception as exc:
+            detail = str(exc)
+            results.append((friend_name, "failed", detail))
+            print(
+                f"[MultiSendFailed] 发送到 '{friend_name}' 失败: {detail}",
+                flush=True,
+            )
+        # 最后一个目标之后不需要等待
+        if idx < len(targets) - 1:
+            time.sleep(send_interval)
+
+    return results
 
 
 def has_cli_option(*names: str) -> bool:
