@@ -244,10 +244,20 @@ python -m pip install -U typing-extensions
 
 - `group_insight/__main__.py`：`python -m group_insight` 模块入口。
 - `group_insight/runtime.py`：`.venv` 重定向等运行时辅助逻辑。
-- `group_insight/cli.py`：命令行参数和主流程。
+- `group_insight/cli.py`：命令行参数和主流程装配。
 - `group_insight/settings.py`：默认值、路径、`.env` 加载和 MCP 懒加载。
-- `group_insight/conversation.py`：消息清洗、分类、统计和分片。
+- `group_insight/models.py`：领域数据模型（`StructuredMessage`、`MessageChunk` 等）。
+- `group_insight/common.py`：跨模块通用工具（文本归一化、slugify、主题相似度、文件读写等）。
+- `group_insight/conversation.py`：消息清洗、发言人归一和消息分类。
+- `group_insight/fetching.py`：微信消息拉取与成员身份解析。
+- `group_insight/rich_content.py`：富媒体消息解析（appmsg XML、链接卡片、合并聊天、回复、拍一拍、红包等）。
+- `group_insight/chunking.py`：消息分片策略（数量、字符数、时间跨度、话题连续性）与 prompt 载荷构造。
+- `group_insight/stats.py`：本地统计与词云（发言排行、互动榜单、时段分布、词频）。
+- `group_insight/llm.py`：LLM 协议、DeepSeek 客户端、余额快照和 prompt 构造。
 - `group_insight/pipeline.py`：固定 `map/reduce/final` 分析流水线。
+- `group_insight/report_model.py`：最终日报结构修复、去重和 fallback 生成。
 - `group_insight/rendering.py`：HTML 渲染和最终 payload。
 - `group_insight/transport.py`：PNG 导出和 RPA 发送。
+- `group_insight/alerts.py`：异常告警邮件发送（可选）。
+- `group_insight/cache_utils.py`：map/reduce/final 阶段缓存工具。
 - `group_insight/scheduler.py`：Windows 任务计划注册模块。

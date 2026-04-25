@@ -11,7 +11,7 @@
 当前文档口径按收口后的运行原则维护：
 
 - `group_insight` 只把仓库根目录 `.env` 视为受支持的本地配置入口。
-- 发送、调度和分析流程以显式参数为准，不再在总览文档里展开旧兼容参数。
+- 发送、调度和分析流程以显式参数为准，支持 `--auto-time`、`--thinking`、`--allow-json-repair` 等开关，不再在总览文档里展开旧兼容参数。
 - 缺少关键输入、依赖或运行条件时优先直接失败，避免静默兜底掩盖问题。
 
 ## 仓库定位
@@ -60,10 +60,11 @@ python main.py decrypt
 它负责：
 
 - 读取已解密微信消息
-- 构造 LLM 分析流程
+- 构造 LLM 分析流程（固定 map/reduce/final，含阶段缓存）
 - 生成 JSON、HTML、PNG 报表
-- 通过 Windows UI 自动化发送报表图片
+- 通过 Windows UI 自动化发送报表图片（支持多目标）
 - 注册每日定时任务
+- 可选异常告警邮件
 
 详细运行说明见：
 
@@ -92,7 +93,7 @@ uv pip install -r requirements.txt
 - `README.md`：父工作区总览。
 - `AGENTS.md`：给编码代理的维护说明。
 - `group_insight/README.md`：群聊日报模块的运行说明。
-- `group_insight/`：日报分析、渲染、发送与调度代码。
+- `group_insight/`：日报分析、渲染、发送与调度代码（含消息拉取、分片、统计、LLM 流水线、缓存）。
 - `wechat-decrypt/`：数据库密钥提取、解密、MCP 查询。
 - `pywechat/`：Windows 微信 UI 自动化。
 - `.env.example`：`group_insight` 的 DeepSeek 环境变量模板。
