@@ -91,7 +91,13 @@ def render_html_report(
             return f'<span class="mention">{html.escape(format_handle(resolved))}</span>'
 
         def render_rich_text(text: Any) -> str:
-            """转义普通文本并替换其中的成员占位符。"""
+            """转义普通文本并替换其中的成员占位符。
+
+            处理顺序：
+            1. ``[[user:...]]`` 占位符（LLM 标准输出）。
+            2. ``wxid_...`` / ``gh_...`` 原始 ID（模型偶发直出）。
+            3. 已知成员昵称/显示名兜底（模型未用占位符时的补偿高亮）。
+            """
             escaped = html.escape(str(text or ''))
 
             def replace_placeholder(match: re.Match[str]) -> str:
@@ -109,7 +115,59 @@ def render_html_report(
                 return f'<span class="mention">{html.escape(format_handle(sender_name))}</span>'
 
             escaped = re.sub(r'\[\[user:([A-Za-z0-9_@.-]+)(?:\]\]|\.\.\.)?', replace_placeholder, escaped)
-            return re.sub(r'@?\b((?:wxid|gh)_[A-Za-z0-9_.-]{6,})\b', replace_raw_member_id, escaped)
+            escaped = re.sub(r'@?\b((?:wxid|gh)_[A-Za-z0-9_.-]{6,})\b', replace_raw_member_id, escaped)
+
+            # 兜底：将已知的成员昵称/显示名也替换为 mention HTML。
+            # 模型有时不遵守 prompt 直接使用昵称，导致摘要中没有高亮。
+            if member_display_map:
+                known_names = sorted(
+                    {
+                        name.strip()
+                        for name in member_display_map.values()
+                        if name and name.strip() not in {'待定', '暂无', 'unknown', '未知成员'}
+                    },
+                    key=len,
+                    reverse=True,
+                )
+                if known_names:
+                    # 保护所有已生成的 mention span（包括占位符/wxid 替换产生的）
+                    mention_spans: list[str] = []
+
+                    def protect_mention(match: re.Match[str]) -> str:
+                        idx = len(mention_spans)
+                        mention_spans.append(match.group(0))
+                        return f'\x00MENTION_{idx}\x00'
+
+                    protected = re.sub(r'<span class="mention">[^<]+</span>', protect_mention, escaped)
+
+                    # 阶段1：先替换所有 @昵称（更具体、歧义更少）
+                    for name in known_names:
+                        escaped_name = re.escape(html.escape(name))
+                        protected = re.sub(
+                            rf'@{escaped_name}(?![A-Za-z0-9_])',
+                            f'<span class="mention">{html.escape(format_handle(name))}</span>',
+                            protected,
+                        )
+
+                    # 阶段1 可能生成了新的 mention span，需要再次保护
+                    protected = re.sub(r'<span class="mention">[^<]+</span>', protect_mention, protected)
+
+                    # 阶段2：替换独立的昵称（长度 >= 2，避免单字符过度误匹配）
+                    for name in known_names:
+                        if len(name) >= 2:
+                            escaped_name = re.escape(html.escape(name))
+                            protected = re.sub(
+                                rf'(?<![A-Za-z0-9_]){escaped_name}(?![A-Za-z0-9_])',
+                                f'<span class="mention">{html.escape(format_handle(name))}</span>',
+                                protected,
+                            )
+
+                    # 恢复被保护的 mention span
+                    for idx, span in enumerate(mention_spans):
+                        protected = protected.replace(f'\x00MENTION_{idx}\x00', span)
+                    escaped = protected
+
+            return escaped
 
         def render_participant_item(item: dict[str, Any]) -> str:
             """渲染一条成员观察列表项。"""
